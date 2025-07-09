@@ -1,5 +1,5 @@
 opencv-python-headless==4.9.0.80
-numpy>=2.0.0 
+numpy>=1.21.2,<2.0.0 
 streamlit==1.32.2
 Pillow>=10.1.0 
 reportlab==4.0.4
