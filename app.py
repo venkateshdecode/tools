@@ -1,16 +1,12 @@
 import sys
-import subprocess
 import warnings
 
 try:
-    import numpy as np
-    if not np.__version__.startswith('1.24'):
-        warnings.warn(f"Found numpy {np.__version__} - installing compatible version")
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "numpy==1.24.4", "--force-reinstall"])
-        import numpy as np 
-except ImportError:
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "numpy==1.24.4"])
-    import numpy as np
+    import cv2
+    CV2_AVAILABLE = True
+except ImportError as e:
+    CV2_AVAILABLE = False
+    warnings.warn(f"OpenCV not available: {str(e)} - some features disabled")
 
 import os
 import re
@@ -21,21 +17,16 @@ from pathlib import Path
 from collections import defaultdict
 from reportlab.lib.pagesizes import A4
 from reportlab.platypus import (
-    SimpleDocTemplate, Table, TableStyle, Image as RLImage, Paragraph, Spacer, PageBreak, KeepInFrame
+    SimpleDocTemplate, Table, TableStyle, Image as RLImage, 
+    Paragraph, Spacer, PageBreak, KeepInFrame
 )
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib import colors
 from PIL import Image as PILImage, ImageOps
 import io
 import shutil
+import numpy as np
 import pandas as pd
-
-try:
-    import cv2
-    CV2_AVAILABLE = True
-except ImportError as e:
-    CV2_AVAILABLE = False
-    st.warning(f"OpenCV not available: {str(e)} - some features disabled")
 
 
 
