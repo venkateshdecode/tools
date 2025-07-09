@@ -1,3 +1,18 @@
+import sys
+import warnings
+
+try:
+    import numpy as np
+    if np.__version__.startswith('2'):
+        warnings.warn("NumPy 2.x detected - forcing NumPy 1.x for OpenCV compatibility")
+        import subprocess
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "numpy==1.26.4"])
+        import numpy as np  # Re-import after install
+except ImportError:
+    import subprocess
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "numpy==1.26.4"])
+    import numpy as np
+
 import os
 import re
 import tempfile
@@ -14,10 +29,13 @@ from reportlab.lib import colors
 from PIL import Image as PILImage
 import io
 import shutil
-import cv2
 import pandas as pd
-import numpy as np
-
+try:
+    import cv2
+    CV2_AVAILABLE = True
+except ImportError as e:
+    CV2_AVAILABLE = False
+    warnings.warn(f"OpenCV not available: {str(e)} - some image processing features may be limited")
 # Configure Streamlit page
 st.set_page_config(
     page_title="Brand Assets Tools",
