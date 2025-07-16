@@ -1,13 +1,3 @@
-import sys
-import warnings
-
-try:
-    import cv2
-    CV2_AVAILABLE = True
-except ImportError as e:
-    CV2_AVAILABLE = False
-    warnings.warn(f"OpenCV not available: {str(e)} - some features disabled")
-
 import os
 import re
 import tempfile
@@ -17,21 +7,18 @@ from pathlib import Path
 from collections import defaultdict
 from reportlab.lib.pagesizes import A4
 from reportlab.platypus import (
-    SimpleDocTemplate, Table, TableStyle, Image as RLImage, 
-    Paragraph, Spacer, PageBreak, KeepInFrame
+    SimpleDocTemplate, Table, TableStyle, Image as RLImage, Paragraph, Spacer, PageBreak, KeepInFrame
 )
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib import colors
-from PIL import Image as PILImage, ImageOps
+from PIL import Image as PILImage
 import io
 import shutil
-import numpy as np
+import cv2
 import pandas as pd
+import numpy as np
 
-
-
-
-
+# Configure Streamlit page
 st.set_page_config(
     page_title="Brand Assets Tools",
     page_icon="🔧",
@@ -1372,17 +1359,407 @@ def center_on_canvas_tool():
             - Original aspect ratio is maintained
             """)
 
+# ========== Shared Functions ==========
+def extract_zip_to_temp(uploaded_file):
+    """Extract uploaded zip file to temporary directory"""
+    temp_dir = tempfile.mkdtemp()
+    with zipfile.ZipFile(uploaded_file, 'r') as zip_ref:
+        zip_ref.extractall(temp_dir)
+    return temp_dir
+
+def extract_brand(file_stem):
+    """Extract brand name from filename using pattern matching"""
+    parts = re.split(r'[ _\-]', file_stem)
+    return re.sub(r'[^a-z0-9]', '', parts[0].lower()) if parts else "unknown"
+
+def clean_letters_only(text):
+    return re.sub(r'[^A-Za-z]', '', text)
+
+def get_cleaned_filename_without_brand(filename, brand):
+    full_letters = clean_letters_only(Path(filename).stem.lower())
+    return full_letters.replace(brand, '', 1)
+
+def get_asset_cell(file_path, filename, col_count):
+    """Create optimized asset cell for PDF with better image handling"""
+    ext = Path(file_path).suffix.lower()
+    styles = getSampleStyleSheet()
+    
+    try:
+        if ext in ALLOWED_IMAGE_EXTENSIONS:
+            with PILImage.open(file_path) as img:
+                orig_width, orig_height = img.size
+                available_width = A4[0] - 40
+                max_width = available_width / col_count
+                max_height = 120
+
+                aspect_ratio = orig_width / orig_height
+                width = max_width
+                height = width / aspect_ratio
+
+                if height > max_height:
+                    height = max_height
+                    width = height * aspect_ratio
+
+                buffer = io.BytesIO()
+                img.convert("RGB").save(buffer, format='PNG')
+                buffer.seek(0)
+                rl_img = RLImage(buffer, width=width, height=height)
+
+                frame = KeepInFrame(max_width, max_height + 30, content=[
+                    rl_img,
+                    Paragraph(filename, styles['Normal'])
+                ], hAlign='CENTER')
+
+                return frame
+        else:
+            return Paragraph(f"{filename}", styles['Normal'])
+    except Exception as e:
+        return Paragraph(f"[Image Error]<br/>{filename}", styles['Normal'])
+
+# ========== PDF Generator Functions ==========
+def analyze_files_by_filename(input_folder):
+    """Analyze files by extracting brand names from filenames"""
+    dateien = []
+    marken_set = set()
+    renamed_files_by_folder_and_marke = defaultdict(lambda: defaultdict(list))
+
+    for subfolder in sorted(Path(input_folder).iterdir()):
+        if not subfolder.is_dir():
+            continue
+
+        for file in sorted(subfolder.iterdir()):
+            if file.suffix.lower() not in ALL_ALLOWED_EXTENSIONS:
+                continue
+            marke = extract_brand(file.stem)
+            marken_set.add(marke)
+            dateien.append({
+                "original_file": file,
+                "original_folder": subfolder.name,
+                "marke": marke
+            })
+
+    for eintrag in dateien:
+        orig = eintrag["original_file"]
+        marke = eintrag["marke"]
+        folder_name = eintrag["original_folder"]
+        renamed_files_by_folder_and_marke[folder_name][marke].append((orig, orig.name))
+
+    return marken_set, renamed_files_by_folder_and_marke, dateien
+
+def generate_filename_based_pdf_report(input_folder, erste_marke=None):
+    """Generate PDF report based on filename brand analysis"""
+    marken_set, renamed_files_by_folder_and_marke, all_files = analyze_files_by_filename(input_folder)
+    
+    if not marken_set:
+        return None, "No brands found in filenames."
+
+    # Create brand index
+    marken_index = {}
+    if erste_marke and erste_marke in marken_set:
+        marken_index[erste_marke] = "01"
+        aktuelle_nummer = 2
+        for marke in sorted(marken_set):
+            if marke != erste_marke:
+                marken_index[marke] = f"{aktuelle_nummer:02d}"
+                aktuelle_nummer += 1
+    else:
+        for i, marke in enumerate(sorted(marken_set), 1):
+            marken_index[marke] = f"{i:02d}"
+
+    # Generate PDF
+    pdf_buffer = io.BytesIO()
+    doc = SimpleDocTemplate(pdf_buffer, pagesize=A4, leftMargin=20, rightMargin=20, topMargin=40, bottomMargin=30)
+    elements = []
+    styles = getSampleStyleSheet()
+
+    nummer_zu_marke = {v: k for k, v in marken_index.items()}
+    marken_spalten = sorted(nummer_zu_marke.items())
+
+    # Overview by folder
+    for folder in sorted(renamed_files_by_folder_and_marke):
+        elements.append(Paragraph(f"<b>Folder: {folder}</b>", styles['Heading2']))
+
+        abschnitt = renamed_files_by_folder_and_marke[folder]
+        total = 0
+        lines = []
+        for nummer, marke in marken_spalten:
+            count = len(abschnitt.get(marke, []))
+            total += count
+            lines.append(f"{nummer} ({marke}): {count}")
+        lines.append(f"Total: {total}")
+        elements.append(Paragraph("<br/>".join(lines), styles['Normal']))
+        elements.append(Spacer(1, 10))
+
+        headers = [f"{nummer} ({marke})" for nummer, marke in marken_spalten]
+        data = [headers]
+        col_data = []
+        max_rows = 0
+        for _, marke in marken_spalten:
+            eintraege = abschnitt.get(marke, [])
+            zellen = [get_asset_cell(p, n, len(headers)) for p, n in eintraege]
+            col_data.append(zellen)
+            max_rows = max(max_rows, len(zellen))
+
+        for i in range(max_rows):
+            row = []
+            for col in col_data:
+                row.append(col[i] if i < len(col) else "")
+            data.append(row)
+
+        col_width = (A4[0] - 40) / len(headers)
+        t = Table(data, colWidths=[col_width] * len(headers))
+        t.setStyle(TableStyle([
+            ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+            ('BACKGROUND', (0, 0), (-1, 0), colors.lightgrey),
+            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+        ]))
+        elements.append(t)
+        elements.append(PageBreak())
+
+    # Total overview
+    elements.append(Paragraph("<b>Total Overview</b>", styles['Heading2']))
+    global_counts = defaultdict(int)
+    for folder_data in renamed_files_by_folder_and_marke.values():
+        for marke, daten in folder_data.items():
+            global_counts[marke] += len(daten)
+    
+    gesamt = 0
+    summary = []
+    for nummer, marke in marken_spalten:
+        count = global_counts[marke]
+        summary.append(f"{marke}: {count} assets")
+        gesamt += count
+    summary.append(f"Total number of all assets: {gesamt}")
+    elements.append(Paragraph("<br/>".join(summary), styles['Normal']))
+
+    try:
+        doc.build(elements)
+        pdf_buffer.seek(0)
+        return pdf_buffer, None
+    except Exception as e:
+        return None, f"Error generating PDF: {str(e)}"
+
+# ========== Excel Report Functions ==========
+def generate_excel_report(output_folder: Path, marken_index: dict, file_to_factorgroup: dict):
+    final_excel_path = output_folder / "IcAt_Overview_Final.xlsx"
+
+    nummer_zu_marke = {v: k for k, v in marken_index.items()}
+    data = []
+    for file in sorted(output_folder.iterdir()):
+        if file.is_file() and file.suffix.lower() in {'.png', '.txt', '.csv', '.md'}:
+            name = file.stem
+            match = re.match(r"(\d{2})B(\d{2})([a-z0-9]+)", name, re.IGNORECASE)
+            if match:
+                markennummer, blocknummer, marke = match.groups()
+                factor = nummer_zu_marke.get(markennummer, marke)
+                factorgroup = file_to_factorgroup.get(file.name, f"{blocknummer}Unknown")
+                data.append({
+                    "factor": factor,
+                    "factorgroup": factorgroup,
+                    "ID": name
+                })
+
+    df_assets = pd.DataFrame(data, columns=["factor", "factorgroup", "ID"])
+
+    reordered_data = []
+    for _, row in df_assets.iterrows():
+        raw_fg = str(row["factorgroup"])
+        group_prefix = raw_fg[:2]
+        try:
+            group = str(int(group_prefix))
+        except ValueError:
+            group = group_prefix
+
+        reordered_data.append({
+            "Group": group,
+            "factor": row["factorgroup"],
+            "factorgroup": row["factor"],
+            "ID": row["ID"]
+        })
+
+    df_reordered = pd.DataFrame(reordered_data, columns=["Group", "factor", "factorgroup", "ID"])
+
+    with pd.ExcelWriter(final_excel_path, engine='openpyxl') as writer:
+        df_assets.to_excel(writer, index=False, sheet_name="Assets")
+        df_reordered.to_excel(writer, index=False, sheet_name="Reordered")
+
+    return final_excel_path
+
+# ========== File Processing Functions ==========
+def process_files(input_folder, marken_index, output_root):
+    """Process and rename files according to brand numbering"""
+    dateien = []
+    renamed_files_by_folder_and_marke = defaultdict(lambda: defaultdict(list))
+    file_to_factorgroup = {}
+
+    for subfolder in sorted(Path(input_folder).iterdir()):
+        if not subfolder.is_dir():
+            continue
+        blocknummer = re.sub(r'\D', '', subfolder.name)[:2].zfill(2)
+        
+        for file in sorted(subfolder.iterdir()):
+            if file.suffix.lower() not in ALL_ALLOWED_EXTENSIONS:
+                continue
+            marke = extract_brand(file.stem)
+            
+            markennummer = marken_index[marke]
+            cleaned = get_cleaned_filename_without_brand(file.name, marke)
+            
+            # Create new filename
+            neuer_name = f"{markennummer}B{blocknummer}{marke}{cleaned}{file.suffix.lower()}"
+            ziel = output_root / neuer_name
+
+            if file.suffix.lower() in ALLOWED_IMAGE_EXTENSIONS:
+                with PILImage.open(file) as img:
+                    img.convert("RGB").save(ziel, format='PNG')
+            else:
+                shutil.copy2(file, ziel)
+
+            renamed_files_by_folder_and_marke[subfolder.name][marke].append((ziel, neuer_name))
+            file_to_factorgroup[neuer_name] = subfolder.name
+
+    return renamed_files_by_folder_and_marke, file_to_factorgroup
+
+# ========== Streamlit UI Components ==========
+def brand_renamer_tool():
+    st.header("Advanced Brand File Processor")
+    st.markdown("Automatically rename and organize brand assets with numbering and generate reports.")
+    
+    uploaded_file = st.file_uploader(
+        "Choose a ZIP file",
+        type=['zip'],
+        help="Upload a zip file containing your brand folders with assets."
+    )
+    
+    if uploaded_file:
+        with st.spinner("Extracting and analyzing files..."):
+            # Extract zip file
+            temp_dir = extract_zip_to_temp(uploaded_file)
+            input_folder = Path(temp_dir)
+            
+            # Find the actual input folder (in case zip has a root folder)
+            items = os.listdir(temp_dir)
+            if len(items) == 1 and os.path.isdir(os.path.join(temp_dir, items[0])):
+                input_folder = Path(temp_dir) / items[0]
+            
+            # Create output folder
+            output_folder = Path(temp_dir) / "output"
+            output_folder.mkdir(exist_ok=True)
+            
+            # Analyze files to detect brands
+            marken_set, _, _ = analyze_files_by_filename(input_folder)
+            
+            if not marken_set:
+                st.error("No brands found in the uploaded files.")
+                return
+            
+            st.success(f"Detected brands: {', '.join(sorted(marken_set))}")
+            
+            # Brand numbering selection
+            st.subheader("Brand Numbering")
+            erste_marke = st.selectbox(
+                "Which brand should be number 01?",
+                options=sorted(marken_set),
+                index=0
+            )
+            
+            # Create brand index
+            marken_index = {erste_marke: "01"}
+            aktuelle_nummer = 2
+            for marke in sorted(marken_set):
+                if marke != erste_marke:
+                    marken_index[marke] = f"{aktuelle_nummer:02d}"
+                    aktuelle_nummer += 1
+            
+            if st.button("Process Files and Generate Reports", type="primary"):
+                with st.spinner("Processing files..."):
+                    # Process and rename files
+                    renamed_files, file_to_factorgroup = process_files(
+                        input_folder, 
+                        marken_index, 
+                        output_folder
+                    )
+                    
+                    # Generate PDF report
+                    pdf_buffer, error = generate_filename_based_pdf_report(input_folder, erste_marke)
+                    if error:
+                        st.error(f"PDF generation failed: {error}")
+                    
+                    # Generate Excel report
+                    excel_path = generate_excel_report(output_folder, marken_index, file_to_factorgroup)
+                    
+                    # Create zip of processed files
+                    zip_buffer = io.BytesIO()
+                    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+                        for file in output_folder.iterdir():
+                            zip_file.write(file, file.name)
+                    
+                    zip_buffer.seek(0)
+                
+                # Display download options
+                st.success("Processing complete!")
+                
+                col1, col2, col3 = st.columns(3)
+                
+                with col1:
+                    if pdf_buffer:
+                        st.download_button(
+                            label="📥 Download PDF Report",
+                            data=pdf_buffer.getvalue(),
+                            file_name="Brand_Assets_Report.pdf",
+                            mime="application/pdf"
+                        )
+                
+                with col2:
+                    st.download_button(
+                        label="📊 Download Excel Report",
+                        data=open(excel_path, 'rb').read(),
+                        file_name="Brand_Assets_Overview.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    )
+                
+                with col3:
+                    st.download_button(
+                        label="📦 Download Processed Files",
+                        data=zip_buffer.getvalue(),
+                        file_name="Brand_Assets_Processed.zip",
+                        mime="application/zip"
+                    )
+                
+                # Clean up
+                shutil.rmtree(temp_dir)
+    else:
+        st.info("👆 Please upload a zip file to get started.")
+        
+        with st.expander("📖 Instructions"):
+            st.markdown("""
+            **How to use this tool:**
+            
+            1. Prepare a zip file with:
+               - Subfolders for each brand (optional)
+               - Files named with brand identifiers (e.g., "nike_shoe.jpg")
+            2. Upload the zip file
+            3. Select which brand should be numbered "01"
+            4. Click "Process Files" to:
+               - Rename files with brand numbering
+               - Generate PDF and Excel reports
+               - Download processed files
+            
+            **Output Format:**
+            - `01B00nikefilename.png` (BrandNumber + Block + BrandName + OriginalName)
+            """)
 def main():
     st.title("🔧 Brand Assets Tools")
 
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
         "PDF Report Generator", 
         "Excel Image Extractor", 
         "Brand File Renamer",
         "White to Transparent",
         "Find Smallest Dimensions",
         "Resize with Transparent Canvas",
-        "Center on Canvas"
+        "Center on Canvas",
+        "Advanced Brand Processor"
     ])
 
     with tab1:
@@ -1399,6 +1776,8 @@ def main():
         resize_with_transparent_canvas_tool()
     with tab7:
         center_on_canvas_tool()
+    with tab8:
+        brand_renamer_tool()
 
 if __name__ == "__main__":
     main()
