@@ -624,7 +624,7 @@ def excel_extractor_tool():
                         try:
                             with cols[col_idx % 3]:
                                 img = PILImage.open(file_path)
-                                st.image(img, caption=os.path.basename(file_path), use_container_width =True)
+                                st.image(img, caption=os.path.basename(file_path), use_column_width =True)
                             col_idx += 1
                         except Exception as e:
                             st.write(f"Could not preview {os.path.basename(file_path)}")
@@ -889,7 +889,7 @@ def white_to_transparent_tool():
                     for i, file_path in enumerate(processed_files[:6]):  # Show max 6 images
                         with cols[i % 3]:
                             img = PILImage.open(file_path)
-                            st.image(img, caption=os.path.basename(file_path), use_container_width=True)
+                            st.image(img, caption=os.path.basename(file_path), use_column_width=True)
                     
                     if len(processed_files) > 6:
                         st.info(f"Showing first 6 images. Total processed: {len(processed_files)}")
@@ -981,12 +981,12 @@ def find_smallest_dimensions_tool():
                     with col1:
                         st.subheader("Smallest Width")
                         st.write(f"Dimensions: {min_width} × {height_at_min_width} px")
-                        st.image(file_min_width, caption=os.path.basename(file_min_width), use_container_width =True)
+                        st.image(file_min_width, caption=os.path.basename(file_min_width), use_column_width =True)
                     
                     with col2:
                         st.subheader("Smallest Height")
                         st.write(f"Dimensions: {width_at_min_height} × {min_height} px")
-                        st.image(file_min_height, caption=os.path.basename(file_min_height), use_container_width =True)
+                        st.image(file_min_height, caption=os.path.basename(file_min_height), use_column_width =True)
                 else:
                     st.warning("No valid image files found in the uploaded zip.")
         
@@ -1174,7 +1174,7 @@ def resize_with_transparent_canvas_tool():
                             for i, file_path in enumerate(sample_files):
                                 with cols[i % 3]:
                                     img = PILImage.open(file_path)
-                                    st.image(img, caption=os.path.basename(file_path), use_container_width=True)
+                                    st.image(img, caption=os.path.basename(file_path), use_column_width=True)
                         
                         if processed_count > 6:
                             st.info(f"Showing sample images. Total processed: {processed_count}")
@@ -1327,7 +1327,7 @@ def center_on_canvas_tool():
                         for i, file_path in enumerate(sample_files):
                             with cols[i % 3]:
                                 img = PILImage.open(file_path)
-                                st.image(img, caption=os.path.basename(file_path), use_container_width=True)
+                                st.image(img, caption=os.path.basename(file_path), use_column_width=True)
                         
                         if processed_count > 6:
                             st.info(f"Showing sample images. Total processed: {processed_count}")
