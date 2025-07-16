@@ -1209,6 +1209,8 @@ def resize_with_transparent_canvas_tool():
             - Maximum dimension: 4000 pixels
             - For batch processing of many images, please be patient
             """)
+
+
 def center_on_canvas_tool():
     st.header("Center on Transparent Canvas")
     st.markdown("Center small images on a transparent 500x500 canvas.")
@@ -1226,7 +1228,7 @@ def center_on_canvas_tool():
         canvas_size = st.number_input(
             "Canvas size (pixels):",
             min_value=100,
-            max_value=2000,
+            max_value=5000,
             value=500,
             step=10,
             key="canvas_size_input"  # Added unique key
@@ -1359,7 +1361,6 @@ def center_on_canvas_tool():
             - Original aspect ratio is maintained
             """)
 
-# ========== Shared Functions ==========
 def extract_zip_to_temp(uploaded_file):
     """Extract uploaded zip file to temporary directory"""
     temp_dir = tempfile.mkdtemp()
@@ -1416,7 +1417,6 @@ def get_asset_cell(file_path, filename, col_count):
     except Exception as e:
         return Paragraph(f"[Image Error]<br/>{filename}", styles['Normal'])
 
-# ========== PDF Generator Functions ==========
 def analyze_files_by_filename(input_folder):
     """Analyze files by extracting brand names from filenames"""
     dateien = []
@@ -1475,7 +1475,6 @@ def generate_filename_based_pdf_report(input_folder, erste_marke=None):
     nummer_zu_marke = {v: k for k, v in marken_index.items()}
     marken_spalten = sorted(nummer_zu_marke.items())
 
-    # Overview by folder
     for folder in sorted(renamed_files_by_folder_and_marke):
         elements.append(Paragraph(f"<b>Folder: {folder}</b>", styles['Heading2']))
 
@@ -1539,7 +1538,6 @@ def generate_filename_based_pdf_report(input_folder, erste_marke=None):
     except Exception as e:
         return None, f"Error generating PDF: {str(e)}"
 
-# ========== Excel Report Functions ==========
 def generate_excel_report(output_folder: Path, marken_index: dict, file_to_factorgroup: dict):
     final_excel_path = output_folder / "IcAt_Overview_Final.xlsx"
 
@@ -1585,7 +1583,6 @@ def generate_excel_report(output_folder: Path, marken_index: dict, file_to_facto
 
     return final_excel_path
 
-# ========== File Processing Functions ==========
 def process_files(input_folder, marken_index, output_root):
     """Process and rename files according to brand numbering"""
     dateien = []
@@ -1605,7 +1602,6 @@ def process_files(input_folder, marken_index, output_root):
             markennummer = marken_index[marke]
             cleaned = get_cleaned_filename_without_brand(file.name, marke)
             
-            # Create new filename
             neuer_name = f"{markennummer}B{blocknummer}{marke}{cleaned}{file.suffix.lower()}"
             ziel = output_root / neuer_name
 
@@ -1620,7 +1616,6 @@ def process_files(input_folder, marken_index, output_root):
 
     return renamed_files_by_folder_and_marke, file_to_factorgroup
 
-# ========== Streamlit UI Components ==========
 def brand_renamer_tool():
     st.header("Advanced Brand File Processor")
     st.markdown("Automatically rename and organize brand assets with numbering and generate reports.")
@@ -1633,20 +1628,16 @@ def brand_renamer_tool():
     
     if uploaded_file:
         with st.spinner("Extracting and analyzing files..."):
-            # Extract zip file
             temp_dir = extract_zip_to_temp(uploaded_file)
             input_folder = Path(temp_dir)
             
-            # Find the actual input folder (in case zip has a root folder)
             items = os.listdir(temp_dir)
             if len(items) == 1 and os.path.isdir(os.path.join(temp_dir, items[0])):
                 input_folder = Path(temp_dir) / items[0]
             
-            # Create output folder
             output_folder = Path(temp_dir) / "output"
             output_folder.mkdir(exist_ok=True)
             
-            # Analyze files to detect brands
             marken_set, _, _ = analyze_files_by_filename(input_folder)
             
             if not marken_set:
@@ -1663,7 +1654,6 @@ def brand_renamer_tool():
                 index=0
             )
             
-            # Create brand index
             marken_index = {erste_marke: "01"}
             aktuelle_nummer = 2
             for marke in sorted(marken_set):
@@ -1680,15 +1670,12 @@ def brand_renamer_tool():
                         output_folder
                     )
                     
-                    # Generate PDF report
                     pdf_buffer, error = generate_filename_based_pdf_report(input_folder, erste_marke)
                     if error:
                         st.error(f"PDF generation failed: {error}")
                     
-                    # Generate Excel report
                     excel_path = generate_excel_report(output_folder, marken_index, file_to_factorgroup)
                     
-                    # Create zip of processed files
                     zip_buffer = io.BytesIO()
                     with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
                         for file in output_folder.iterdir():
@@ -1696,7 +1683,6 @@ def brand_renamer_tool():
                     
                     zip_buffer.seek(0)
                 
-                # Display download options
                 st.success("Processing complete!")
                 
                 col1, col2, col3 = st.columns(3)
@@ -1726,7 +1712,6 @@ def brand_renamer_tool():
                         mime="application/zip"
                     )
                 
-                # Clean up
                 shutil.rmtree(temp_dir)
     else:
         st.info("👆 Please upload a zip file to get started.")
