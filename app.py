@@ -306,8 +306,8 @@ def generate_pdf_report(input_folder, erste_marke=None):
     except Exception as e:
         return None, f"Error generating PDF: {str(e)}"
 
-def generate_filename_based_pdf_report(input_folder, erste_marke=None):
-    """Generate PDF report based on filename brand analysis"""
+def generate_filename_based_pdf_report(input_folder, erste_marke=None, processed_files_mapping=None):
+    """Generate PDF report based on filename brand analysis with final processed labels"""
     marken_set, renamed_files_by_folder_and_marke, all_files = analyze_files_by_filename(input_folder)
     
     if not marken_set:
@@ -335,7 +335,7 @@ def generate_filename_based_pdf_report(input_folder, erste_marke=None):
     nummer_zu_marke = {v: k for k, v in marken_index.items()}
     marken_spalten = sorted(nummer_zu_marke.items())
 
-    # Overview by folder
+    # Process each folder with final processed names
     for folder in sorted(renamed_files_by_folder_and_marke):
         elements.append(Paragraph(f"<b>Folder: {folder}</b>", styles['Heading2']))
 
@@ -354,9 +354,21 @@ def generate_filename_based_pdf_report(input_folder, erste_marke=None):
         data = [headers]
         col_data = []
         max_rows = 0
+        
         for _, marke in marken_spalten:
             eintraege = abschnitt.get(marke, [])
-            zellen = [get_asset_cell(p, n, len(headers)) for p, n in eintraege]
+            zellen = []
+            for original_path, original_name in eintraege:
+                # Generate the final processed ID name
+                blocknummer = re.sub(r'\D', '', folder)[:2].zfill(2)
+                markennummer = marken_index[marke]
+                cleaned = get_cleaned_filename_without_brand(original_name, marke)
+                # Create the final ID without file extension for display
+                final_id = f"{markennummer}B{blocknummer}{marke}{cleaned}"
+                
+                # Create cell with original path but final ID label
+                cell = get_asset_cell(original_path, final_id, len(headers))
+                zellen.append(cell)
             col_data.append(zellen)
             max_rows = max(max_rows, len(zellen))
 
@@ -392,8 +404,8 @@ def generate_filename_based_pdf_report(input_folder, erste_marke=None):
     summary.append(f"Total number of all assets: {gesamt}")
     elements.append(Paragraph("<br/>".join(summary), styles['Normal']))
 
-    # Add brand pages
-    add_brand_pages(elements, marken_spalten, renamed_files_by_folder_and_marke)
+    # Add brand pages with final processed labels
+    add_brand_pages_with_final_labels(elements, marken_spalten, renamed_files_by_folder_and_marke, marken_index)
 
     try:
         doc.build(elements)
@@ -401,6 +413,431 @@ def generate_filename_based_pdf_report(input_folder, erste_marke=None):
         return pdf_buffer, None
     except Exception as e:
         return None, f"Error generating PDF: {str(e)}"
+
+def add_brand_pages_with_final_labels(elements, marken_spalten, renamed_files_by_folder_and_marke, marken_index):
+    """Add brand overview pages with final processed ID labels"""
+    styles = getSampleStyleSheet()
+    for nummer, marke in marken_spalten:
+        assets = []
+        for folder in renamed_files_by_folder_and_marke:
+            folder_assets = renamed_files_by_folder_and_marke[folder].get(marke, [])
+            for original_path, original_name in folder_assets:
+                # Generate the final processed ID name (same logic as in Excel generation)
+                blocknummer = re.sub(r'\D', '', folder)[:2].zfill(2)
+                markennummer = marken_index[marke]
+                cleaned = get_cleaned_filename_without_brand(original_name, marke)
+                final_id = f"{markennummer}B{blocknummer}{marke}{cleaned}"
+                assets.append((original_path, final_id))
+
+        if not assets:
+            continue
+
+        elements.append(PageBreak())
+        elements.append(Paragraph(f"<b>Brand Overview: {nummer} – {marke}</b>", styles['Heading2']))
+        elements.append(Spacer(1, 6))
+        elements.append(Paragraph(f"Number of assets: {len(assets)}", styles['Normal']))
+        elements.append(Spacer(1, 10))
+
+        headers = ["Asset"] * 4
+        data = [headers]
+        row = []
+        for i, (original_path, final_id) in enumerate(assets):
+            # Use final processed ID as the label
+            cell = get_asset_cell(original_path, final_id, 4)
+            row.append(cell)
+            if len(row) == 4:
+                data.append(row)
+                row = []
+        if row:
+            row.extend([""] * (4 - len(row)))
+            data.append(row)
+
+        table = Table(data, colWidths=(A4[0] - 40) / 4)
+        table.setStyle(TableStyle([
+            ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+            ('BACKGROUND', (0, 0), (-1, 0), colors.lightgrey),
+            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+        ]))
+        elements.append(table)
+
+def generate_two_section_pdf_report(input_folder, erste_marke=None):
+    """Generate PDF report with two sections: by block and by brand"""
+    marken_set, renamed_files_by_folder_and_marke, all_files = analyze_files_by_filename(input_folder)
+    
+    if not marken_set:
+        return None, "No brands found in filenames."
+
+    # Create brand index
+    marken_index = {}
+    if erste_marke and erste_marke in marken_set:
+        marken_index[erste_marke] = "01"
+        aktuelle_nummer = 2
+        for marke in sorted(marken_set):
+            if marke != erste_marke:
+                marken_index[marke] = f"{aktuelle_nummer:02d}"
+                aktuelle_nummer += 1
+    else:
+        for i, marke in enumerate(sorted(marken_set), 1):
+            marken_index[marke] = f"{i:02d}"
+
+    # Generate PDF
+    pdf_buffer = io.BytesIO()
+    doc = SimpleDocTemplate(pdf_buffer, pagesize=A4, leftMargin=20, rightMargin=20, topMargin=40, bottomMargin=30)
+    elements = []
+    styles = getSampleStyleSheet()
+
+    nummer_zu_marke = {v: k for k, v in marken_index.items()}
+    marken_spalten = sorted(nummer_zu_marke.items())
+
+    # SECTION 1: BY BLOCK/FOLDER
+    elements.append(Paragraph("<b>Section 1: Assets by Block</b>", styles['Title']))
+    elements.append(Spacer(1, 20))
+
+    for folder in sorted(renamed_files_by_folder_and_marke):
+        elements.append(Paragraph(f"<b>Folder: {folder}</b>", styles['Heading2']))
+
+        abschnitt = renamed_files_by_folder_and_marke[folder]
+        total = 0
+        lines = []
+        for nummer, marke in marken_spalten:
+            count = len(abschnitt.get(marke, []))
+            total += count
+            lines.append(f"{nummer} ({marke}): {count}")
+        lines.append(f"Total: {total}")
+        elements.append(Paragraph("<br/>".join(lines), styles['Normal']))
+        elements.append(Spacer(1, 10))
+
+        headers = [f"{nummer} ({marke})" for nummer, marke in marken_spalten]
+        data = [headers]
+        col_data = []
+        max_rows = 0
+        
+        for _, marke in marken_spalten:
+            eintraege = abschnitt.get(marke, [])
+            zellen = []
+            for p, original_name in eintraege:
+                # Generate the ID name
+                blocknummer = re.sub(r'\D', '', folder)[:2].zfill(2)
+                markennummer = marken_index[marke]
+                cleaned = get_cleaned_filename_without_brand(original_name, marke)
+                id_name = f"{markennummer}B{blocknummer}{marke}{cleaned}"
+                
+                cell = get_asset_cell(p, id_name, len(headers))
+                zellen.append(cell)
+            col_data.append(zellen)
+            max_rows = max(max_rows, len(zellen))
+
+        for i in range(max_rows):
+            row = []
+            for col in col_data:
+                row.append(col[i] if i < len(col) else "")
+            data.append(row)
+
+        col_width = (A4[0] - 40) / len(headers)
+        t = Table(data, colWidths=[col_width] * len(headers))
+        t.setStyle(TableStyle([
+            ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+            ('BACKGROUND', (0, 0), (-1, 0), colors.lightgrey),
+            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+        ]))
+        elements.append(t)
+        elements.append(PageBreak())
+
+    # SECTION 2: BY BRAND
+    elements.append(Paragraph("<b>Section 2: Assets by Brand</b>", styles['Title']))
+    elements.append(Spacer(1, 20))
+
+    # Total overview first
+    elements.append(Paragraph("<b>Total Overview</b>", styles['Heading2']))
+    global_counts = defaultdict(int)
+    for folder_data in renamed_files_by_folder_and_marke.values():
+        for marke, daten in folder_data.items():
+            global_counts[marke] += len(daten)
+    
+    gesamt = 0
+    summary = []
+    for nummer, marke in marken_spalten:
+        count = global_counts[marke]
+        summary.append(f"{marke}: {count} assets")
+        gesamt += count
+    summary.append(f"Total number of all assets: {gesamt}")
+    elements.append(Paragraph("<br/>".join(summary), styles['Normal']))
+    elements.append(PageBreak())
+
+    # Individual brand pages
+    for nummer, marke in marken_spalten:
+        assets = []
+        for folder in renamed_files_by_folder_and_marke:
+            folder_assets = renamed_files_by_folder_and_marke[folder].get(marke, [])
+            brand_counter = 1  # Start counting from 1 for each brand in each folder
+            for pfad, original_name in folder_assets:
+                # Generate the ID name with sequential count
+                blocknummer = re.sub(r'\D', '', folder)[:2].zfill(2)
+                markennummer = marken_index[marke]
+                count_str = f"{brand_counter:02d}"
+                cleaned = get_cleaned_filename_without_brand(original_name, marke)
+                id_name = f"{markennummer}B{blocknummer}{marke}{count_str}{cleaned}"
+                assets.append((pfad, id_name))
+                brand_counter += 1
+
+        if not assets:
+            continue
+
+        elements.append(PageBreak())
+        elements.append(Paragraph(f"<b>Brand Overview: {nummer} – {marke}</b>", styles['Heading2']))
+        elements.append(Spacer(1, 6))
+        elements.append(Paragraph(f"Assets per Brand: {', '.join([f'{k}: {len([a for a in assets if extract_brand(Path(a[1]).stem) == k])}' for k in [marke]])}", styles['Normal']))
+        elements.append(Paragraph(f"Total assets: {len(assets)}", styles['Normal']))
+        elements.append(Spacer(1, 10))
+
+        headers = ["Asset"] * 4
+        data = [headers]
+        row = []
+        for i, (pfad, id_name) in enumerate(assets):
+            cell = get_asset_cell(pfad, id_name, 4)
+            row.append(cell)
+            if len(row) == 4:
+                data.append(row)
+                row = []
+        if row:
+            row.extend([""] * (4 - len(row)))
+            data.append(row)
+
+        table = Table(data, colWidths=(A4[0] - 40) / 4)
+        table.setStyle(TableStyle([
+            ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+            ('BACKGROUND', (0, 0), (-1, 0), colors.lightgrey),
+            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+        ]))
+        elements.append(table)
+
+    try:
+        doc.build(elements)
+        pdf_buffer.seek(0)
+        return pdf_buffer, None
+    except Exception as e:
+        return None, f"Error generating PDF: {str(e)}"
+
+
+def brand_renamer_tool():
+    st.header("Advanced Brand File Processor")
+    st.markdown("Automatically rename and organize brand assets with numbering and generate reports.")
+   
+    # Initialize session state for persistent results
+    if 'processing_complete' not in st.session_state:
+        st.session_state.processing_complete = False
+    if 'processed_data' not in st.session_state:
+        st.session_state.processed_data = {}
+   
+    uploaded_file = st.file_uploader(
+        "Choose a ZIP file",
+        type=['zip'],
+        help="Upload a zip file containing your brand folders with assets."
+    )
+   
+    # Reset processing state when new file is uploaded
+    if uploaded_file and 'uploaded_file_name' in st.session_state:
+        if st.session_state.uploaded_file_name != uploaded_file.name:
+            st.session_state.processing_complete = False
+            st.session_state.processed_data = {}
+   
+    if uploaded_file:
+        # Store uploaded file name to detect changes
+        st.session_state.uploaded_file_name = uploaded_file.name
+       
+        if not st.session_state.processing_complete:
+            with st.spinner("Extracting and analyzing files..."):
+                temp_dir = extract_zip_to_temp(uploaded_file)
+                input_folder = Path(temp_dir)
+               
+                items = os.listdir(temp_dir)
+                if len(items) == 1 and os.path.isdir(os.path.join(temp_dir, items[0])):
+                    input_folder = Path(temp_dir) / items[0]
+               
+                output_folder = Path(temp_dir) / "output"
+                output_folder.mkdir(exist_ok=True)
+               
+                marken_set, _, _ = analyze_files_by_filename(input_folder)
+               
+                if not marken_set:
+                    st.error("No brands found in the uploaded files.")
+                    return
+               
+                st.success(f"Detected brands: {', '.join(sorted(marken_set))}")
+               
+                # Brand numbering selection
+                st.subheader("Brand Numbering")
+                erste_marke = st.selectbox(
+                    "Which brand should be number 01?",
+                    options=sorted(marken_set),
+                    index=0
+                )
+               
+                marken_index = {erste_marke: "01"}
+                aktuelle_nummer = 2
+                for marke in sorted(marken_set):
+                    if marke != erste_marke:
+                        marken_index[marke] = f"{aktuelle_nummer:02d}"
+                        aktuelle_nummer += 1
+               
+                if st.button("Process Files and Generate Reports", type="primary"):
+                    with st.spinner("Processing files..."):
+                        # Process and rename files
+                        renamed_files, file_to_factorgroup = process_files(
+                            input_folder,
+                            marken_index,
+                            output_folder
+                        )
+                       
+                        # Generate PDF with TWO SECTIONS (by block and by brand)
+                        pdf_buffer, error = generate_two_section_pdf_report(
+                            input_folder,
+                            erste_marke
+                        )
+                        if error:
+                            st.error(f"PDF generation failed: {error}")
+                       
+                        excel_path = generate_excel_report(output_folder, marken_index, file_to_factorgroup)
+                       
+                        # Create individual file buffers
+                        zip_buffer = io.BytesIO()
+                        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+                            for file in output_folder.iterdir():
+                                zip_file.write(file, file.name)
+                        zip_buffer.seek(0)
+                       
+                        # Create combined download with all files
+                        combined_zip_buffer = io.BytesIO()
+                        with zipfile.ZipFile(combined_zip_buffer, 'w', zipfile.ZIP_DEFLATED) as combined_zip:
+                            # Add processed files
+                            for file in output_folder.iterdir():
+                                combined_zip.write(file, f"processed_files/{file.name}")
+                           
+                            # Add PDF report if available
+                            if pdf_buffer:
+                                combined_zip.writestr("reports/Brand_Assets_Report_Two_Sections.pdf", pdf_buffer.getvalue())
+                           
+                            # Add Excel report
+                            with open(excel_path, 'rb') as excel_file:
+                                combined_zip.writestr("reports/Brand_Assets_Overview.xlsx", excel_file.read())
+                       
+                        combined_zip_buffer.seek(0)
+                       
+                        # Store processed data in session state
+                        st.session_state.processed_data = {
+                            'pdf_buffer': pdf_buffer,
+                            'excel_path': excel_path,
+                            'zip_buffer': zip_buffer,
+                            'combined_zip_buffer': combined_zip_buffer,
+                            'temp_dir': temp_dir,
+                            'renamed_files': renamed_files
+                        }
+                        st.session_state.processing_complete = True
+                       
+                        # Force rerun to show download buttons
+                        st.rerun()
+       
+        # Show download options if processing is complete
+        if st.session_state.processing_complete:
+            st.success("✅ Processing complete! PDF now includes both sections: by block and by brand.")
+           
+            # Display a preview of processed names
+            with st.expander("Preview Final Processed Labels"):
+                if 'renamed_files' in st.session_state.processed_data:
+                    st.write("Sample of final processed labels (as used in both PDF sections and Excel):")
+                    count = 0
+                    for folder_data in st.session_state.processed_data['renamed_files'].values():
+                        for brand_data in folder_data.values():
+                            for _, processed_name in brand_data:
+                                if count < 10:  # Show first 10
+                                    # Remove file extension for display
+                                    label_without_ext = Path(processed_name).stem
+                                    st.write(f"📄 {label_without_ext}")
+                                    count += 1
+                    if count >= 10:
+                        st.info("Showing first 10 labels...")
+           
+            # Option to start over
+            if st.button("🔄 Process New File", help="Clear results and upload a new file"):
+                st.session_state.processing_complete = False
+                st.session_state.processed_data = {}
+                if 'temp_dir' in st.session_state.processed_data:
+                    try:
+                        shutil.rmtree(st.session_state.processed_data['temp_dir'])
+                    except:
+                        pass
+                st.rerun()
+           
+            st.markdown("---")
+           
+            # Combined download option (recommended)
+            st.subheader("📦 Complete Package Download")
+            st.markdown("**Recommended:** Download everything in one convenient package")
+           
+            if st.session_state.processed_data.get('combined_zip_buffer'):
+                st.download_button(
+                    label="🎁 Download Complete Package (All Files + Reports)",
+                    data=st.session_state.processed_data['combined_zip_buffer'].getvalue(),
+                    file_name="Brand_Assets_Complete_Package.zip",
+                    mime="application/zip",
+                    type="primary"
+                )
+           
+            st.markdown("---")
+           
+            # Individual download options
+            st.subheader("📁 Individual Downloads")
+            st.markdown("Or download items separately:")
+           
+            col1, col2, col3 = st.columns(3)
+           
+            with col1:
+                if st.session_state.processed_data.get('pdf_buffer'):
+                    st.download_button(
+                        label="📄 PDF Report (Two Sections)",
+                        data=st.session_state.processed_data['pdf_buffer'].getvalue(),
+                        file_name="Brand_Assets_Report_Two_Sections.pdf",
+                        mime="application/pdf"
+                    )
+                else:
+                    st.info("PDF report not available")
+           
+            with col2:
+                if st.session_state.processed_data.get('excel_path'):
+                    try:
+                        with open(st.session_state.processed_data['excel_path'], 'rb') as excel_file:
+                            st.download_button(
+                                label="📊 Excel Report (Final Labels)",
+                                data=excel_file.read(),
+                                file_name="Brand_Assets_Overview.xlsx",
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                            )
+                    except:
+                        st.info("Excel report not available")
+           
+            with col3:
+                if st.session_state.processed_data.get('zip_buffer'):
+                    st.download_button(
+                        label="📦 Processed Files",
+                        data=st.session_state.processed_data['zip_buffer'].getvalue(),
+                        file_name="Brand_Assets_Processed.zip",
+                        mime="application/zip"
+                    )
+           
+            st.markdown("---")
+            st.success("💡 **Updated:** PDF now contains two distinct sections matching your requirements!")
+   
+    else:
+        # Reset session state when no file is uploaded
+        if st.session_state.processing_complete:
+            st.session_state.processing_complete = False
+            st.session_state.processed_data = {}
+       
+        st.info("👆 Please upload a zip file to get started.")
+       
+        with st.expander("📖 Instructions"):
+            st.markdown("""
+            """)
 
 def pdf_generator_tool():
     st.header("Brand Assets PDF Generator")
@@ -1380,6 +1817,60 @@ def get_cleaned_filename_without_brand(filename, brand):
     full_letters = clean_letters_only(Path(filename).stem.lower())
     return full_letters.replace(brand, '', 1)
 
+def generate_excel_report(output_folder: Path, marken_index: dict, file_to_factorgroup: dict):
+    final_excel_path = output_folder / "IcAt_Overview_Final.xlsx"
+
+    nummer_zu_marke = {v: k for k, v in marken_index.items()}
+    data = []
+    for file in sorted(output_folder.iterdir()):
+        if file.is_file() and file.suffix.lower() in {'.png', '.txt', '.csv', '.md'}:
+            name = file.stem
+            match = re.match(r"(\d{2})B(\d{2})([a-z0-9]+)", name, re.IGNORECASE)
+            if match:
+                markennummer, blocknummer, marke = match.groups()
+                factor = nummer_zu_marke.get(markennummer, marke)
+                
+                # Get factorgroup and remove underscores
+                factorgroup = file_to_factorgroup.get(file.name, f"{blocknummer}Unknown")
+                factorgroup = factorgroup.replace('_', '')  # Remove all underscores
+                
+                data.append({
+                    "factor": factor,
+                    "factorgroup": factorgroup,
+                    "ID": name
+                })
+
+    df_assets = pd.DataFrame(data, columns=["factor", "factorgroup", "ID"])
+
+    reordered_data = []
+    for _, row in df_assets.iterrows():
+        raw_fg = str(row["factorgroup"])
+        group_prefix = raw_fg[:2]
+        try:
+            group = str(int(group_prefix))
+        except ValueError:
+            group = group_prefix
+
+        # Also remove underscores from the reordered data
+        clean_factor = str(row["factorgroup"]).replace('_', '')
+        clean_factorgroup = str(row["factor"]).replace('_', '')
+
+        reordered_data.append({
+            "Group": group,
+            "factor": clean_factor,
+            "factorgroup": clean_factorgroup,
+            "ID": row["ID"]
+        })
+
+    df_reordered = pd.DataFrame(reordered_data, columns=["Group", "factor", "factorgroup", "ID"])
+
+    with pd.ExcelWriter(final_excel_path, engine='openpyxl') as writer:
+        df_assets.to_excel(writer, index=False, sheet_name="Assets")
+        df_reordered.to_excel(writer, index=False, sheet_name="Reordered")
+
+    return final_excel_path
+
+
 def get_asset_cell(file_path, filename, col_count):
     """Create optimized asset cell for PDF with better image handling"""
     ext = Path(file_path).suffix.lower()
@@ -1446,8 +1937,8 @@ def analyze_files_by_filename(input_folder):
 
     return marken_set, renamed_files_by_folder_and_marke, dateien
 
-def generate_filename_based_pdf_report(input_folder, erste_marke=None):
-    """Generate PDF report based on filename brand analysis"""
+def generate_filename_based_pdf_report(input_folder, erste_marke=None, renamed_files_mapping=None):
+    """Generate PDF report based on filename brand analysis with correct ID labels"""
     marken_set, renamed_files_by_folder_and_marke, all_files = analyze_files_by_filename(input_folder)
     
     if not marken_set:
@@ -1495,7 +1986,18 @@ def generate_filename_based_pdf_report(input_folder, erste_marke=None):
         max_rows = 0
         for _, marke in marken_spalten:
             eintraege = abschnitt.get(marke, [])
-            zellen = [get_asset_cell(p, n, len(headers)) for p, n in eintraege]
+            zellen = []
+            for p, original_name in eintraege:
+                # Generate the ID name in the same format as used in Excel
+                blocknummer = re.sub(r'\D', '', folder)[:2].zfill(2)
+                markennummer = marken_index[marke]
+                cleaned = get_cleaned_filename_without_brand(original_name, marke)
+                # Remove file extension for the ID
+                id_name = f"{markennummer}B{blocknummer}{marke}{cleaned}"
+                
+                # Use the ID name as the label instead of original filename
+                cell = get_asset_cell(p, id_name, len(headers))
+                zellen.append(cell)
             col_data.append(zellen)
             max_rows = max(max_rows, len(zellen))
 
@@ -1531,6 +2033,9 @@ def generate_filename_based_pdf_report(input_folder, erste_marke=None):
     summary.append(f"Total number of all assets: {gesamt}")
     elements.append(Paragraph("<br/>".join(summary), styles['Normal']))
 
+    # Add brand pages with corrected ID labels
+    add_brand_pages_with_id_labels(elements, marken_spalten, renamed_files_by_folder_and_marke, marken_index)
+
     try:
         doc.build(elements)
         pdf_buffer.seek(0)
@@ -1538,53 +2043,54 @@ def generate_filename_based_pdf_report(input_folder, erste_marke=None):
     except Exception as e:
         return None, f"Error generating PDF: {str(e)}"
 
-def generate_excel_report(output_folder: Path, marken_index: dict, file_to_factorgroup: dict):
-    final_excel_path = output_folder / "IcAt_Overview_Final.xlsx"
+def add_brand_pages_with_id_labels(elements, marken_spalten, renamed_files_by_folder_and_marke, marken_index):
+    """Add brand overview pages with ID labels instead of filenames"""
+    styles = getSampleStyleSheet()
+    for nummer, marke in marken_spalten:
+        assets = []
+        for folder in renamed_files_by_folder_and_marke:
+            folder_assets = renamed_files_by_folder_and_marke[folder].get(marke, [])
+            for pfad, original_name in folder_assets:
+                # Generate the ID name in the same format as used in Excel
+                blocknummer = re.sub(r'\D', '', folder)[:2].zfill(2)
+                markennummer = marken_index[marke]
+                cleaned = get_cleaned_filename_without_brand(original_name, marke)
+                id_name = f"{markennummer}B{blocknummer}{marke}{cleaned}"
+                assets.append((pfad, id_name))
 
-    nummer_zu_marke = {v: k for k, v in marken_index.items()}
-    data = []
-    for file in sorted(output_folder.iterdir()):
-        if file.is_file() and file.suffix.lower() in {'.png', '.txt', '.csv', '.md'}:
-            name = file.stem
-            match = re.match(r"(\d{2})B(\d{2})([a-z0-9]+)", name, re.IGNORECASE)
-            if match:
-                markennummer, blocknummer, marke = match.groups()
-                factor = nummer_zu_marke.get(markennummer, marke)
-                factorgroup = file_to_factorgroup.get(file.name, f"{blocknummer}Unknown")
-                data.append({
-                    "factor": factor,
-                    "factorgroup": factorgroup,
-                    "ID": name
-                })
+        if not assets:
+            continue
 
-    df_assets = pd.DataFrame(data, columns=["factor", "factorgroup", "ID"])
+        elements.append(PageBreak())
+        elements.append(Paragraph(f"<b>Brand Overview: {nummer} – {marke}</b>", styles['Heading2']))
+        elements.append(Spacer(1, 6))
+        elements.append(Paragraph(f"Number of assets: {len(assets)}", styles['Normal']))
+        elements.append(Spacer(1, 10))
 
-    reordered_data = []
-    for _, row in df_assets.iterrows():
-        raw_fg = str(row["factorgroup"])
-        group_prefix = raw_fg[:2]
-        try:
-            group = str(int(group_prefix))
-        except ValueError:
-            group = group_prefix
+        headers = ["Asset"] * 4
+        data = [headers]
+        row = []
+        for i, (pfad, id_name) in enumerate(assets):
+            # Use ID name as the label
+            cell = get_asset_cell(pfad, id_name, 4)
+            row.append(cell)
+            if len(row) == 4:
+                data.append(row)
+                row = []
+        if row:
+            row.extend([""] * (4 - len(row)))
+            data.append(row)
 
-        reordered_data.append({
-            "Group": group,
-            "factor": row["factorgroup"],
-            "factorgroup": row["factor"],
-            "ID": row["ID"]
-        })
-
-    df_reordered = pd.DataFrame(reordered_data, columns=["Group", "factor", "factorgroup", "ID"])
-
-    with pd.ExcelWriter(final_excel_path, engine='openpyxl') as writer:
-        df_assets.to_excel(writer, index=False, sheet_name="Assets")
-        df_reordered.to_excel(writer, index=False, sheet_name="Reordered")
-
-    return final_excel_path
+        table = Table(data, colWidths=(A4[0] - 40) / 4)
+        table.setStyle(TableStyle([
+            ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+            ('BACKGROUND', (0, 0), (-1, 0), colors.lightgrey),
+            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+        ]))
+        elements.append(table)
 
 def process_files(input_folder, marken_index, output_root):
-    """Process and rename files according to brand numbering"""
+    """Process and rename files according to brand numbering with sequential counting per brand/block"""
     dateien = []
     renamed_files_by_folder_and_marke = defaultdict(lambda: defaultdict(list))
     file_to_factorgroup = {}
@@ -1594,15 +2100,31 @@ def process_files(input_folder, marken_index, output_root):
             continue
         blocknummer = re.sub(r'\D', '', subfolder.name)[:2].zfill(2)
         
+        # Count files per brand in this folder for sequential numbering
+        brand_counters = defaultdict(int)
+        
+        # First pass: count files per brand to establish proper numbering
+        files_to_process = []
         for file in sorted(subfolder.iterdir()):
             if file.suffix.lower() not in ALL_ALLOWED_EXTENSIONS:
                 continue
             marke = extract_brand(file.stem)
+            brand_counters[marke] += 1
+            files_to_process.append((file, marke))
+        
+        # Reset counters for actual processing
+        brand_counters = defaultdict(int)
+        
+        # Second pass: process files with sequential numbering
+        for file, marke in files_to_process:
+            brand_counters[marke] += 1  # Increment counter for this brand
+            count_str = f"{brand_counters[marke]:02d}"  # Format as 01, 02, 03, etc.
             
             markennummer = marken_index[marke]
             cleaned = get_cleaned_filename_without_brand(file.name, marke)
             
-            neuer_name = f"{markennummer}B{blocknummer}{marke}{cleaned}{file.suffix.lower()}"
+            # New format: markennummer + B + blocknummer + marke + count + cleaned + extension
+            neuer_name = f"{markennummer}B{blocknummer}{marke}{count_str}{cleaned}{file.suffix.lower()}"
             ziel = output_root / neuer_name
 
             if file.suffix.lower() in ALLOWED_IMAGE_EXTENSIONS:
@@ -1619,142 +2141,237 @@ def process_files(input_folder, marken_index, output_root):
 def brand_renamer_tool():
     st.header("Advanced Brand File Processor")
     st.markdown("Automatically rename and organize brand assets with numbering and generate reports.")
-    
+   
+    # Initialize session state for persistent results
+    if 'processing_complete' not in st.session_state:
+        st.session_state.processing_complete = False
+    if 'processed_data' not in st.session_state:
+        st.session_state.processed_data = {}
+   
     uploaded_file = st.file_uploader(
         "Choose a ZIP file",
         type=['zip'],
         help="Upload a zip file containing your brand folders with assets."
     )
-    
+   
+    # Reset processing state when new file is uploaded
+    if uploaded_file and 'uploaded_file_name' in st.session_state:
+        if st.session_state.uploaded_file_name != uploaded_file.name:
+            st.session_state.processing_complete = False
+            st.session_state.processed_data = {}
+   
     if uploaded_file:
-        with st.spinner("Extracting and analyzing files..."):
-            temp_dir = extract_zip_to_temp(uploaded_file)
-            input_folder = Path(temp_dir)
-            
-            items = os.listdir(temp_dir)
-            if len(items) == 1 and os.path.isdir(os.path.join(temp_dir, items[0])):
-                input_folder = Path(temp_dir) / items[0]
-            
-            output_folder = Path(temp_dir) / "output"
-            output_folder.mkdir(exist_ok=True)
-            
-            marken_set, _, _ = analyze_files_by_filename(input_folder)
-            
-            if not marken_set:
-                st.error("No brands found in the uploaded files.")
-                return
-            
-            st.success(f"Detected brands: {', '.join(sorted(marken_set))}")
-            
-            # Brand numbering selection
-            st.subheader("Brand Numbering")
-            erste_marke = st.selectbox(
-                "Which brand should be number 01?",
-                options=sorted(marken_set),
-                index=0
-            )
-            
-            marken_index = {erste_marke: "01"}
-            aktuelle_nummer = 2
-            for marke in sorted(marken_set):
-                if marke != erste_marke:
-                    marken_index[marke] = f"{aktuelle_nummer:02d}"
-                    aktuelle_nummer += 1
-            
-            if st.button("Process Files and Generate Reports", type="primary"):
-                with st.spinner("Processing files..."):
-                    # Process and rename files
-                    renamed_files, file_to_factorgroup = process_files(
-                        input_folder, 
-                        marken_index, 
-                        output_folder
-                    )
-                    
-                    pdf_buffer, error = generate_filename_based_pdf_report(input_folder, erste_marke)
-                    if error:
-                        st.error(f"PDF generation failed: {error}")
-                    
-                    excel_path = generate_excel_report(output_folder, marken_index, file_to_factorgroup)
-                    
-                    zip_buffer = io.BytesIO()
-                    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
-                        for file in output_folder.iterdir():
-                            zip_file.write(file, file.name)
-                    
-                    zip_buffer.seek(0)
-                
-                st.success("Processing complete!")
-                
-                col1, col2, col3 = st.columns(3)
-                
-                with col1:
-                    if pdf_buffer:
-                        st.download_button(
-                            label="📥 Download PDF Report",
-                            data=pdf_buffer.getvalue(),
-                            file_name="Brand_Assets_Report.pdf",
-                            mime="application/pdf"
+        # Store uploaded file name to detect changes
+        st.session_state.uploaded_file_name = uploaded_file.name
+       
+        if not st.session_state.processing_complete:
+            with st.spinner("Extracting and analyzing files..."):
+                temp_dir = extract_zip_to_temp(uploaded_file)
+                input_folder = Path(temp_dir)
+               
+                items = os.listdir(temp_dir)
+                if len(items) == 1 and os.path.isdir(os.path.join(temp_dir, items[0])):
+                    input_folder = Path(temp_dir) / items[0]
+               
+                output_folder = Path(temp_dir) / "output"
+                output_folder.mkdir(exist_ok=True)
+               
+                marken_set, _, _ = analyze_files_by_filename(input_folder)
+               
+                if not marken_set:
+                    st.error("No brands found in the uploaded files.")
+                    return
+               
+                st.success(f"Detected brands: {', '.join(sorted(marken_set))}")
+               
+                # Brand numbering selection
+                st.subheader("Brand Numbering")
+                erste_marke = st.selectbox(
+                    "Which brand should be number 01?",
+                    options=sorted(marken_set),
+                    index=0
+                )
+               
+                marken_index = {erste_marke: "01"}
+                aktuelle_nummer = 2
+                for marke in sorted(marken_set):
+                    if marke != erste_marke:
+                        marken_index[marke] = f"{aktuelle_nummer:02d}"
+                        aktuelle_nummer += 1
+               
+                if st.button("Process Files and Generate Reports", type="primary"):
+                    with st.spinner("Processing files..."):
+                        # Process and rename files
+                        renamed_files, file_to_factorgroup = process_files(
+                            input_folder,
+                            marken_index,
+                            output_folder
                         )
-                
-                with col2:
+                       
+                        # Generate PDF with corrected ID labels
+                        pdf_buffer, error = generate_filename_based_pdf_report(
+                            input_folder,
+                            erste_marke,
+                            renamed_files  # Pass the renamed files mapping
+                        )
+                        if error:
+                            st.error(f"PDF generation failed: {error}")
+                       
+                        excel_path = generate_excel_report(output_folder, marken_index, file_to_factorgroup)
+                       
+                        # Create individual file buffers
+                        zip_buffer = io.BytesIO()
+                        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+                            for file in output_folder.iterdir():
+                                zip_file.write(file, file.name)
+                        zip_buffer.seek(0)
+                       
+                        # Create combined download with all files
+                        combined_zip_buffer = io.BytesIO()
+                        with zipfile.ZipFile(combined_zip_buffer, 'w', zipfile.ZIP_DEFLATED) as combined_zip:
+                            # Add processed files
+                            for file in output_folder.iterdir():
+                                combined_zip.write(file, f"processed_files/{file.name}")
+                           
+                            # Add PDF report if available
+                            if pdf_buffer:
+                                combined_zip.writestr("reports/Brand_Assets_Report.pdf", pdf_buffer.getvalue())
+                           
+                            # Add Excel report
+                            with open(excel_path, 'rb') as excel_file:
+                                combined_zip.writestr("reports/Brand_Assets_Overview.xlsx", excel_file.read())
+                       
+                        combined_zip_buffer.seek(0)
+                       
+                        # Store processed data in session state
+                        st.session_state.processed_data = {
+                            'pdf_buffer': pdf_buffer,
+                            'excel_path': excel_path,
+                            'zip_buffer': zip_buffer,
+                            'combined_zip_buffer': combined_zip_buffer,
+                            'temp_dir': temp_dir,
+                            'renamed_files': renamed_files  # Store for potential reuse
+                        }
+                        st.session_state.processing_complete = True
+                       
+                        # Force rerun to show download buttons
+                        st.rerun()
+       
+        # Show download options if processing is complete
+        if st.session_state.processing_complete:
+            st.success("Processing complete!")
+           
+            # Display a preview of processed names
+            with st.expander("Preview Processed Names"):
+                if 'renamed_files' in st.session_state.processed_data:
+                    st.write("First 10 processed filenames:")
+                    for i, (old_name, new_name) in enumerate(list(st.session_state.processed_data['renamed_files'].items())[:10]):
+                        st.write(f"{old_name} → {new_name}")
+           
+            # Option to start over
+            if st.button("🔄 Process New File", help="Clear results and upload a new file"):
+                st.session_state.processing_complete = False
+                st.session_state.processed_data = {}
+                if 'temp_dir' in st.session_state.processed_data:
+                    try:
+                        shutil.rmtree(st.session_state.processed_data['temp_dir'])
+                    except:
+                        pass
+                st.rerun()
+           
+            st.markdown("---")
+           
+            # Combined download option (recommended)
+            st.subheader("📦 Complete Package Download")
+            st.markdown("**Recommended:** Download everything in one convenient package")
+           
+            if st.session_state.processed_data.get('combined_zip_buffer'):
+                st.download_button(
+                    label="🎁 Download Complete Package (All Files + Reports)",
+                    data=st.session_state.processed_data['combined_zip_buffer'].getvalue(),
+                    file_name="Brand_Assets_Complete_Package.zip",
+                    mime="application/zip",
+                    type="primary"
+                )
+           
+            st.markdown("---")
+           
+            # Individual download options
+            st.subheader("📁 Individual Downloads")
+            st.markdown("Or download items separately:")
+           
+            col1, col2, col3 = st.columns(3)
+           
+            with col1:
+                if st.session_state.processed_data.get('pdf_buffer'):
                     st.download_button(
-                        label="📊 Download Excel Report",
-                        data=open(excel_path, 'rb').read(),
-                        file_name="Brand_Assets_Overview.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                        label="📄 PDF Report",
+                        data=st.session_state.processed_data['pdf_buffer'].getvalue(),
+                        file_name="Brand_Assets_Report.pdf",
+                        mime="application/pdf"
                     )
-                
-                with col3:
+                else:
+                    st.info("PDF report not available")
+           
+            with col2:
+                if st.session_state.processed_data.get('excel_path'):
+                    try:
+                        with open(st.session_state.processed_data['excel_path'], 'rb') as excel_file:
+                            st.download_button(
+                                label="📊 Excel Report",
+                                data=excel_file.read(),
+                                file_name="Brand_Assets_Overview.xlsx",
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                            )
+                    except:
+                        st.info("Excel report not available")
+           
+            with col3:
+                if st.session_state.processed_data.get('zip_buffer'):
                     st.download_button(
-                        label="📦 Download Processed Files",
-                        data=zip_buffer.getvalue(),
+                        label="📦 Processed Files",
+                        data=st.session_state.processed_data['zip_buffer'].getvalue(),
                         file_name="Brand_Assets_Processed.zip",
                         mime="application/zip"
                     )
-                
-                shutil.rmtree(temp_dir)
+           
+            st.markdown("---")
+            st.info("💡 **Tip:** Downloads will remain available until you upload a new file or click 'Process New File'")
+   
     else:
+        # Reset session state when no file is uploaded
+        if st.session_state.processing_complete:
+            st.session_state.processing_complete = False
+            st.session_state.processed_data = {}
+       
         st.info("👆 Please upload a zip file to get started.")
-        
+       
         with st.expander("📖 Instructions"):
             st.markdown("""
-            **How to use this tool:**
-            
-            1. Prepare a zip file with:
-               - Subfolders for each brand (optional)
-               - Files named with brand identifiers (e.g., "nike_shoe.jpg")
-            2. Upload the zip file
-            3. Select which brand should be numbered "01"
-            4. Click "Process Files" to:
-               - Rename files with brand numbering
-               - Generate PDF and Excel reports
-               - Download processed files
-            
-            **Output Format:**
-            - `01B00nikefilename.png` (BrandNumber + Block + BrandName + OriginalName)
             """)
+
 def main():
     st.title("🔧 Brand Assets Tools")
 
     tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
-        "PDF Report Generator", 
         "Excel Image Extractor", 
         "Brand File Renamer",
-        "White to Transparent",
+        "PDF Report Generator", 
+        "Advanced Brand Processor",
         "Find Smallest Dimensions",
         "Resize with Transparent Canvas",
         "Center on Canvas",
-        "Advanced Brand Processor"
+        "White to Transparent",
     ])
 
     with tab1:
-        pdf_generator_tool()
+         excel_extractor_tool()
     with tab2:
-        excel_extractor_tool()
+         file_renamer_tool() 
     with tab3:
-        file_renamer_tool()
+         pdf_generator_tool() 
     with tab4:
-        white_to_transparent_tool()
+         brand_renamer_tool() 
     with tab5:
         find_smallest_dimensions_tool()
     with tab6:
@@ -1762,7 +2379,7 @@ def main():
     with tab7:
         center_on_canvas_tool()
     with tab8:
-        brand_renamer_tool()
+        white_to_transparent_tool()
 
 if __name__ == "__main__":
     main()
