@@ -1,26 +1,30 @@
+import io
 import os
 import re
+import shutil
+import struct
 import tempfile
 import zipfile
-import streamlit as st
-from pathlib import Path
 from collections import defaultdict
-from reportlab.lib.pagesizes import A4
-from reportlab.platypus import (
-    SimpleDocTemplate, Table, TableStyle, Image as RLImage, Paragraph, Spacer, PageBreak, KeepInFrame
-)
-from reportlab.lib.styles import getSampleStyleSheet
-from reportlab.lib import colors
-from PIL import Image as PILImage
-import io
-import shutil
+from pathlib import Path
 import cv2
-import pandas as pd
 import numpy as np
-
+import pandas as pd
+import streamlit as st
+import xlrd
+from PIL import Image as PILImage
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.platypus import (
+    SimpleDocTemplate, Table, TableStyle, Image as RLImage, 
+    Paragraph, Spacer, PageBreak, KeepInFrame
+)
+import xml.etree.ElementTree as ET
+import openpyxl
 # Configure Streamlit page
 st.set_page_config(
-    page_title="Brand Assets Tools",
+    page_title="Brand Asset Management Tools​",
     page_icon="🔧",
     layout="wide"
 )
@@ -28,7 +32,10 @@ st.set_page_config(
 # Defined file types
 ALLOWED_IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.bmp', '.gif', '.tiff', '.webp'}
 ALLOWED_TEXT_EXTENSIONS = {'.txt', '.md', '.csv'}
-ALL_ALLOWED_EXTENSIONS = ALLOWED_IMAGE_EXTENSIONS.union(ALLOWED_TEXT_EXTENSIONS)
+ALLOWED_VIDEO_EXTENSIONS = {'.mp4', '.avi', '.mov', '.wmv', '.flv', '.mkv', '.webm', '.m4v', '.3gp', '.ogv'}
+ALLOWED_AUDIO_EXTENSIONS = {'.mp3', '.wav', '.aac', '.flac', '.ogg', '.m4a', '.wma'}
+ALL_ALLOWED_EXTENSIONS = ALLOWED_IMAGE_EXTENSIONS.union(ALLOWED_TEXT_EXTENSIONS).union(ALLOWED_VIDEO_EXTENSIONS).union(ALLOWED_AUDIO_EXTENSIONS)
+
 
 # Helper functions from both files
 def extract_zip_to_temp(uploaded_file):
@@ -621,7 +628,7 @@ def generate_two_section_pdf_report(input_folder, erste_marke=None):
 
 def brand_renamer_tool():
     st.header("Advanced Brand File Processor")
-    st.markdown("Automatically rename and organize brand assets with numbering and generate reports.")
+    st.markdown("Automatically rename and organize brand assets with final names and outputs (pdf overview, excel output) for programming")
    
     # Initialize session state for persistent results
     if 'processing_complete' not in st.session_state:
@@ -632,7 +639,6 @@ def brand_renamer_tool():
     uploaded_file = st.file_uploader(
         "Choose a ZIP file",
         type=['zip'],
-        help="Upload a zip file containing your brand folders with assets."
     )
    
     # Reset processing state when new file is uploaded
@@ -840,21 +846,20 @@ def brand_renamer_tool():
             """)
 
 def pdf_generator_tool():
-    st.header("Brand Assets PDF Generator")
-    st.markdown("Upload a zip file containing brand assets to generate a comprehensive PDF report.")
+    st.header("Asset Overview​")
+    st.markdown("Upload a zip file containing brand assets to generate asset overview by brand​")
     
     # Analysis method selection
     analysis_method = st.radio(
-        "Choose analysis method:",
-        ["Folder-based analysis", "Filename-based analysis"],
-        help="Folder-based: analyzes brands based on folder structure. Filename-based: extracts brand names from filenames."
+        "Choose:",
+        ["Overview by Brand", "Overview by Asset Type"],
+        help="Overview by Brand: assets are organized by brand folders (they do NOT include brandname_ (underscore \"_\") in filename) ​. Overview by Asset Type: assets are organized by blocks AND include brandname_ (underscore \"_\") in filename)​"
     )
     
     # File upload
     uploaded_file = st.file_uploader(
         "Choose a ZIP file",
         type=['zip'],
-        help="Upload a zip file containing your brand assets.",
         key="pdf_zip_upload"
     )
     
@@ -870,7 +875,7 @@ def pdf_generator_tool():
             if len(items) == 1 and os.path.isdir(os.path.join(temp_dir, items[0])):
                 input_folder = os.path.join(temp_dir, items[0])
             
-            if analysis_method == "Folder-based analysis":
+            if analysis_method == "Overview by Brand":
                 # Original folder-based analysis
                 marken = erkenne_marken_aus_ordnern(input_folder)
                 
@@ -910,7 +915,7 @@ def pdf_generator_tool():
                         )
                         
             else:
-                # Filename-based analysis
+                # Filename-based analysis (Overview by Asset Type)
                 marken_set, renamed_files_by_folder_and_marke, all_files = analyze_files_by_filename(input_folder)
                 
                 if not marken_set:
@@ -938,18 +943,19 @@ def pdf_generator_tool():
                 # Generate PDF button
                 if st.button("Generate PDF Report", type="primary"):
                     with st.spinner("Generating PDF report..."):
-                        pdf_buffer, error = generate_filename_based_pdf_report(input_folder, erste_marke)
+                        # Use the two-section report function for filename-based analysis
+                        pdf_buffer, error = generate_two_section_pdf_report(input_folder, erste_marke)
                     
                     if error:
                         st.error(f"{error}")
                     elif pdf_buffer:
-                        st.success("PDF report generated successfully!")
+                        st.success("PDF report generated successfully! (Contains two sections: by Brand and by Asset Type)")
                         
                         # Download button
                         st.download_button(
-                            label="📥 Download PDF Report",
+                            label="📥 Download PDF Report (Two Sections)",
                             data=pdf_buffer.getvalue(),
-                            file_name="IcAt_Overview_Branding.pdf",
+                            file_name="IcAt_Overview by Brand and Asset Type.pdf",
                             mime="application/pdf"
                         )
         
@@ -966,24 +972,895 @@ def pdf_generator_tool():
             st.markdown("""
             **How to use this tool:**
             
-            **Folder-based analysis:**
+            **Overview by Brand:**
             - Create folders named after your brands
             - Place brand assets inside each brand folder
+            - Assets do NOT need brand names in their filenames
             - Zip the entire structure
+            - Generates single-section PDF report organized by brand
             
-            **Filename-based analysis:**
-            - Name your files with brand identifiers at the beginning (e.g., 'Brand1_asset.jpg', 'Brand2_document.pdf')
-            - Organize files in any folder structure
+            **Overview by Asset Type:**
+            - Name your files with brand identifiers at the beginning followed by an underscore (e.g., 'Brand1_asset.jpg', 'Brand2_document.pdf')
+            - Organize files in any folder structure (blocks/categories)
             - The tool will extract brand names from filenames automatically
+            - Generates two-section PDF report: Section 1 (by Asset Type/Block) and Section 2 (by Brand)
             
             **Supported file types:**
             - **Images:** JPG, JPEG, PNG, BMP, GIF, TIFF, WEBP
             - **Text files:** TXT, MD, CSV
             """)
 
+
+
+def extract_images_from_xlsx_worksheet_specific(excel_file_path, output_dir, target_worksheet=None):
+    """
+    Extract images from specific worksheet in .xlsx files
+    """
+    extracted_files = []
+    available_worksheets = []
+    
+    try:
+        # First, get worksheet information using openpyxl
+        try:
+            from openpyxl import load_workbook
+            wb = load_workbook(excel_file_path, read_only=True)
+            available_worksheets = wb.sheetnames
+            wb.close()
+        except ImportError:
+            # Fallback: read worksheet names from zip structure
+            with zipfile.ZipFile(excel_file_path, 'r') as z:
+                try:
+                    workbook_xml = z.read('xl/workbook.xml').decode('utf-8')
+                    root = ET.fromstring(workbook_xml)
+                    sheets = root.findall('.//{http://schemas.openxmlformats.org/spreadsheetml/2006/main}sheet')
+                    available_worksheets = [sheet.get('name') for sheet in sheets]
+                except:
+                    available_worksheets = ["Sheet1"]  # Default fallback
+
+        with zipfile.ZipFile(excel_file_path, 'r') as z:
+            # Get all relationships and media files
+            worksheet_media_map = {}
+            
+            # Parse worksheet relationships to find which images belong to which worksheet
+            if target_worksheet and target_worksheet != "All worksheets":
+                # Find the worksheet ID for the target worksheet
+                target_sheet_id = None
+                try:
+                    workbook_xml = z.read('xl/workbook.xml').decode('utf-8')
+                    root = ET.fromstring(workbook_xml)
+                    sheets = root.findall('.//{http://schemas.openxmlformats.org/spreadsheetml/2006/main}sheet')
+                    
+                    for sheet in sheets:
+                        if sheet.get('name') == target_worksheet:
+                            target_sheet_id = sheet.get('sheetId')
+                            break
+                except Exception as e:
+                    print(f"Error parsing workbook.xml: {e}")
+                    target_sheet_id = "1"  # Default to first sheet
+
+                if target_sheet_id:
+                    # Parse worksheet relationships
+                    try:
+                        worksheet_rels_path = f'xl/worksheets/_rels/sheet{target_sheet_id}.xml.rels'
+                        if worksheet_rels_path not in z.namelist():
+                            # Try alternative naming
+                            worksheet_rels_path = f'xl/worksheets/_rels/sheet1.xml.rels'
+                        
+                        if worksheet_rels_path in z.namelist():
+                            rels_xml = z.read(worksheet_rels_path).decode('utf-8')
+                            rels_root = ET.fromstring(rels_xml)
+                            
+                            # Find image relationships
+                            relationships = rels_root.findall('.//{http://schemas.openxmlformats.org/package/2006/relationships}Relationship')
+                            worksheet_images = []
+                            
+                            for rel in relationships:
+                                target_path = rel.get('Target')
+                                rel_type = rel.get('Type')
+                                
+                                # Check if this is an image relationship
+                                if 'image' in rel_type.lower() and target_path:
+                                    # Convert relative path to absolute path in zip
+                                    if target_path.startswith('../'):
+                                        img_path = 'xl/' + target_path[3:]
+                                    else:
+                                        img_path = f'xl/worksheets/{target_path}'
+                                    
+                                    if img_path in z.namelist():
+                                        worksheet_images.append(img_path)
+                            
+                            # Extract only images from this worksheet
+                            count = 0
+                            for img_path in worksheet_images:
+                                filename = Path(img_path).name
+                                target_path = Path(output_dir) / f"ws_{target_worksheet}_{filename}"
+                                
+                                with z.open(img_path) as source, open(target_path, 'wb') as target_file:
+                                    shutil.copyfileobj(source, target_file)
+                                
+                                extracted_files.append(str(target_path))
+                                count += 1
+                            
+                            return count, extracted_files, None, available_worksheets
+                            
+                    except Exception as e:
+                        print(f"Error parsing worksheet relationships: {e}")
+                        # Fall back to extracting all images
+                        pass
+
+            # If target_worksheet is "All worksheets" or parsing failed, extract all images
+            media_files = [f for f in z.infolist() if f.filename.startswith("xl/media/")]
+            count = 0
+            
+            for file_info in media_files:
+                filename = Path(file_info.filename).name
+                if target_worksheet == "All worksheets":
+                    target_path = Path(output_dir) / filename
+                else:
+                    target_path = Path(output_dir) / f"all_{filename}"
+                
+                with z.open(file_info) as source, open(target_path, 'wb') as target_file:
+                    shutil.copyfileobj(source, target_file)
+                
+                extracted_files.append(str(target_path))
+                count += 1
+
+            return count, extracted_files, None, available_worksheets
+
+    except Exception as e:
+        return 0, [], f"Error processing .xlsx file: {str(e)}", available_worksheets
+
+
+def extract_images_from_xls_worksheet_specific(xls_file_path, output_dir, target_worksheet=None):
+    """
+    Extract images from .xls files with basic worksheet awareness
+    Note: .xls format has limitations for precise worksheet-specific extraction
+    """
+    extracted_files = []
+    available_worksheets = []
+    
+    try:
+        # Get worksheet information
+        try:
+            import xlrd
+            workbook = xlrd.open_workbook(xls_file_path, formatting_info=True)
+            available_worksheets = workbook.sheet_names()
+            
+            if target_worksheet and target_worksheet != "All worksheets" and target_worksheet in available_worksheets:
+                # For .xls, we can only provide basic filtering
+                # The binary extraction method extracts all images, but we can at least validate the worksheet exists
+                sheet_index = available_worksheets.index(target_worksheet)
+                print(f"Extracting from worksheet '{target_worksheet}' (index: {sheet_index})")
+        except ImportError:
+            available_worksheets = ["All worksheets"]
+        except Exception as e:
+            print(f"Error reading .xls worksheets: {e}")
+            available_worksheets = ["Sheet1"]
+
+        # Use the comprehensive binary extraction method
+        count, extracted_files, error = extract_ole_images_from_xls_comprehensive(xls_file_path, output_dir)
+        
+        # Rename files to indicate worksheet limitation
+        if target_worksheet and target_worksheet != "All worksheets" and count > 0:
+            renamed_files = []
+            for i, file_path in enumerate(extracted_files):
+                old_path = Path(file_path)
+                new_path = old_path.parent / f"xls_{target_worksheet}_{old_path.name}"
+                try:
+                    os.rename(old_path, new_path)
+                    renamed_files.append(str(new_path))
+                except:
+                    renamed_files.append(file_path)  # Keep original if rename fails
+            extracted_files = renamed_files
+
+        warning_msg = None
+        if target_worksheet and target_worksheet != "All worksheets":
+            warning_msg = f"Note: .xls format limitations - extracted images may be from multiple worksheets, not just '{target_worksheet}'"
+
+        return count, extracted_files, warning_msg, available_worksheets
+
+    except Exception as e:
+        return 0, [], f"Error processing .xls file: {str(e)}", available_worksheets
+
+
+def extract_ole_images_from_xls_comprehensive(xls_file_path, output_dir):
+    """
+    Comprehensive extraction of embedded images from .xls files
+    """
+    extracted_files = []
+    count = 0
+    
+    try:
+        # Read the entire file as binary
+        with open(xls_file_path, 'rb') as f:
+            data = f.read()
+
+        # Enhanced image signatures
+        image_signatures = [
+            (b'\xFF\xD8\xFF\xE0', b'\xFF\xD9', 'jpg', 4),  # JFIF
+            (b'\xFF\xD8\xFF\xE1', b'\xFF\xD9', 'jpg', 4),  # EXIF
+            (b'\xFF\xD8\xFF\xDB', b'\xFF\xD9', 'jpg', 4),  # Standard JPEG
+            (b'\x89PNG\r\n\x1A\n', b'IEND\xaeB`\x82', 'png', 8),  # PNG
+            (b'GIF87a', b'\x00\x3B', 'gif', 6),  # GIF87a
+            (b'GIF89a', b'\x00\x3B', 'gif', 6),  # GIF89a
+            (b'BM', None, 'bmp', 2),  # BMP
+        ]
+
+        found_positions = set()
+
+        # Direct image signature search
+        for start_sig, end_sig, ext, min_header_size in image_signatures:
+            pos = 0
+            while True:
+                pos = data.find(start_sig, pos)
+                if pos == -1:
+                    break
+                
+                if pos in found_positions:
+                    pos += len(start_sig)
+                    continue
+
+                try:
+                    image_data = None
+                    
+                    if ext == 'jpg':
+                        # JPEG extraction
+                        end_pos = pos + len(start_sig)
+                        while end_pos < len(data) - 1:
+                            if data[end_pos] == 0xFF and data[end_pos + 1] == 0xD9:
+                                end_pos += 2
+                                image_data = data[pos:end_pos]
+                                break
+                            end_pos += 1
+                            if end_pos - pos > 10 * 1024 * 1024:  # 10MB max
+                                break
+                                
+                    elif ext == 'png':
+                        # PNG extraction
+                        end_pos = data.find(end_sig, pos)
+                        if end_pos != -1:
+                            end_pos += len(end_sig)
+                            image_data = data[pos:end_pos]
+                            
+                    elif ext == 'gif':
+                        # GIF extraction
+                        end_pos = data.find(end_sig, pos)
+                        if end_pos != -1:
+                            end_pos += len(end_sig)
+                            image_data = data[pos:end_pos]
+                            
+                    elif ext == 'bmp':
+                        # BMP extraction
+                        if pos + 18 <= len(data):
+                            try:
+                                file_size = struct.unpack('<I', data[pos + 2:pos + 6])[0]
+                                if 54 <= file_size <= 50 * 1024 * 1024 and pos + file_size <= len(data):
+                                    image_data = data[pos:pos + file_size]
+                            except struct.error:
+                                pass
+
+                    # Validate and save image
+                    if image_data and len(image_data) >= min_header_size:
+                        if validate_and_save_image_improved(image_data, output_dir, ext, count):
+                            found_positions.add(pos)
+                            extracted_files.append(f"{output_dir}/extracted_image_{count + 1:03d}.{ext}")
+                            count += 1
+
+                except Exception as e:
+                    print(f"Error processing {ext} at position {pos}: {e}")
+
+                pos += 1
+
+        return count, extracted_files, None if count > 0 else "No images found using binary extraction"
+
+    except Exception as e:
+        return 0, [], f"Error reading .xls file: {str(e)}"
+
+
+def validate_and_save_image_improved(image_data, output_dir, ext, count):
+    """
+    Improved image validation and saving
+    """
+    try:
+        img_buffer = io.BytesIO(image_data)
+        
+        with PILImage.open(img_buffer) as img:
+            img.verify()
+            
+        img_buffer.seek(0)
+        with PILImage.open(img_buffer) as img:
+            width, height = img.size
+            
+            # Validate dimensions
+            if width < 1 or height < 1 or width > 20000 or height > 20000:
+                return False
+            
+            if width * height < 16:  # Less than 4x4 pixels
+                return False
+
+            # Convert problematic modes
+            if img.mode in ('P', 'LA'):
+                img = img.convert('RGBA')
+            elif img.mode == '1':
+                img = img.convert('L')
+
+            # Handle transparency for JPEG
+            if ext == 'jpg' and img.mode in ('RGBA', 'LA'):
+                background = PILImage.new('RGB', img.size, (255, 255, 255))
+                if img.mode == 'RGBA':
+                    background.paste(img, mask=img.split()[-1])
+                else:
+                    background.paste(img.convert('RGBA'), mask=img.split()[-1])
+                img = background
+
+            # Save image
+            output_path = f"{output_dir}/extracted_image_{count + 1:03d}.{ext}"
+            
+            if ext == 'jpg':
+                img.save(output_path, 'JPEG', quality=95, optimize=True)
+            elif ext == 'png':
+                img.save(output_path, 'PNG', optimize=True)
+            elif ext == 'gif':
+                if img.mode != 'P':
+                    img = img.convert('P', palette=PILImage.ADAPTIVE)
+                img.save(output_path, 'GIF', optimize=True)
+            else:
+                img.save(output_path)
+
+            return True
+
+    except Exception as e:
+        print(f"Image validation failed: {e}")
+        return False
+
+
+def extract_images_from_excel_with_worksheet_improved(excel_file_path, output_dir, target_worksheet=None):
+    """
+    Main improved extraction function with proper worksheet support
+    """
+    try:
+        file_ext = Path(excel_file_path).suffix.lower()
+        
+        if file_ext == '.xlsx':
+            return extract_images_from_xlsx_worksheet_specific(excel_file_path, output_dir, target_worksheet)
+        elif file_ext == '.xls':
+            return extract_images_from_xls_worksheet_specific(excel_file_path, output_dir, target_worksheet)
+        else:
+            return 0, [], f"Unsupported file format: {file_ext}", []
+
+    except Exception as e:
+        return 0, [], str(e), []
+
+
+def get_excel_worksheets(excel_file_path):
+    """Get list of worksheet names from Excel file"""
+    try:
+        file_ext = Path(excel_file_path).suffix.lower()
+        
+        if file_ext == '.xlsx':
+            try:
+                from openpyxl import load_workbook
+                wb = load_workbook(excel_file_path, read_only=True)
+                worksheets = wb.sheetnames
+                wb.close()
+                return worksheets
+            except ImportError:
+                # Fallback method using zipfile
+                with zipfile.ZipFile(excel_file_path, 'r') as z:
+                    try:
+                        workbook_xml = z.read('xl/workbook.xml').decode('utf-8')
+                        root = ET.fromstring(workbook_xml)
+                        sheets = root.findall('.//{http://schemas.openxmlformats.org/spreadsheetml/2006/main}sheet')
+                        return [sheet.get('name') for sheet in sheets]
+                    except:
+                        return ["Sheet1"]
+                        
+        elif file_ext == '.xls':
+            try:
+                import xlrd
+                workbook = xlrd.open_workbook(excel_file_path)
+                return workbook.sheet_names()
+            except ImportError:
+                return ["All worksheets"]
+        
+        return []
+        
+    except Exception:
+        return []
+
+def extract_images_from_xlsx_improved(xlsx_path, output_dir, target_sheets=None):
+    """
+    Improved extraction of images from .xlsx files with proper sheet mapping
+    """
+    try:
+        extracted_files = []
+        image_count = 0
+        
+        with zipfile.ZipFile(xlsx_path, 'r') as zip_ref:
+            # Get all files in the archive
+            file_list = zip_ref.namelist()
+            
+            # Find media files
+            media_files = [f for f in file_list if f.startswith('xl/media/')]
+            if not media_files:
+                return 0, [], "No images found in the Excel file", []
+            
+            # Get worksheet information
+            sheet_mapping = {}  # Maps sheet IDs to names
+            sheet_rids = {}     # Maps sheet names to rIds
+            
+            if 'xl/workbook.xml' in file_list:
+                with zip_ref.open('xl/workbook.xml') as f:
+                    content = f.read().decode('utf-8')
+                    import re
+                    # Extract sheet information
+                    sheet_matches = re.findall(r'<sheet name="([^"]+)" sheetId="(\d+)" r:id="(rId\d+)"', content)
+                    for name, sheet_id, r_id in sheet_matches:
+                        sheet_mapping[sheet_id] = name
+                        sheet_rids[name] = r_id
+            
+            available_sheets = list(sheet_mapping.values())
+            
+            # If target_sheets is None, extract from all sheets
+            if target_sheets is None:
+                target_sheets = available_sheets
+            elif isinstance(target_sheets, str):
+                target_sheets = [target_sheets] if target_sheets != "All worksheets" else available_sheets
+            
+            # Map images to sheets by analyzing drawing relationships
+            sheet_images = {}  # Maps sheet names to their image files
+            
+            # Check each worksheet for drawing relationships
+            for sheet_id, sheet_name in sheet_mapping.items():
+                if sheet_name not in target_sheets:
+                    continue
+                    
+                sheet_images[sheet_name] = []
+                
+                # Look for drawing relationships for this sheet
+                drawing_rels_file = f'xl/worksheets/_rels/sheet{sheet_id}.xml.rels'
+                if drawing_rels_file not in file_list:
+                    # Try alternative naming patterns
+                    possible_names = [
+                        f'xl/worksheets/_rels/sheet{sheet_id}.xml.rels',
+                        f'xl/worksheets/_rels/sheet{int(sheet_id)}.xml.rels'
+                    ]
+                    drawing_rels_file = None
+                    for possible in possible_names:
+                        if possible in file_list:
+                            drawing_rels_file = possible
+                            break
+                
+                if drawing_rels_file:
+                    try:
+                        with zip_ref.open(drawing_rels_file) as f:
+                            rels_content = f.read().decode('utf-8')
+                        
+                        # Find drawing references
+                        drawing_matches = re.findall(r'Target="([^"]*drawing\d+\.xml)"', rels_content)
+                        
+                        for drawing_file in drawing_matches:
+                            drawing_path = f'xl/{drawing_file}'
+                            if drawing_path in file_list:
+                                # Now get the drawing relationships
+                                drawing_rels_path = drawing_path.replace('.xml', '.xml.rels').replace('xl/', 'xl/').replace('drawings/', 'drawings/_rels/')
+                                
+                                if drawing_rels_path in file_list:
+                                    with zip_ref.open(drawing_rels_path) as f:
+                                        drawing_rels_content = f.read().decode('utf-8')
+                                    
+                                    # Extract image references
+                                    image_matches = re.findall(r'Target="([^"]*media/[^"]+)"', drawing_rels_content)
+                                    for img_ref in image_matches:
+                                        img_path = f'xl/drawings/{img_ref}' if not img_ref.startswith('../') else f'xl/{img_ref[3:]}'
+                                        if img_path in file_list:
+                                            sheet_images[sheet_name].append(img_path)
+                    except Exception as e:
+                        print(f"Error processing relationships for sheet {sheet_name}: {e}")
+            
+            # If no sheet-specific images found, fall back to extracting all images
+            if not any(sheet_images.values()):
+                print("No sheet-specific images found, extracting all images")
+                for sheet_name in target_sheets:
+                    sheet_images[sheet_name] = media_files.copy()
+            
+            # Extract images for target sheets
+            extracted_media = set()  # Avoid duplicates
+            
+            for sheet_name in target_sheets:
+                if sheet_name in sheet_images:
+                    for media_file in sheet_images[sheet_name]:
+                        if media_file not in extracted_media:
+                            try:
+                                # Extract the image
+                                image_data = zip_ref.read(media_file)
+                                
+                                # Get original filename and extension
+                                original_filename = os.path.basename(media_file)
+                                name, ext = os.path.splitext(original_filename)
+                                
+                                # Create output filename with sheet context
+                                if len(target_sheets) > 1:
+                                    output_filename = f"{sheet_name}_{original_filename}"
+                                else:
+                                    output_filename = original_filename
+                                
+                                output_path = os.path.join(output_dir, output_filename)
+                                
+                                # Save the image
+                                with open(output_path, 'wb') as img_file:
+                                    img_file.write(image_data)
+                                
+                                extracted_files.append(output_path)
+                                extracted_media.add(media_file)
+                                image_count += 1
+                                
+                            except Exception as e:
+                                print(f"Error extracting {media_file}: {e}")
+        
+        return image_count, extracted_files, None, available_sheets
+        
+    except Exception as e:
+        return 0, [], f"Error processing Excel file: {str(e)}", []
+
+
+
+def get_excel_worksheets_simple(excel_file_path):
+    """Get list of worksheet names from Excel file - simplified version"""
+    try:
+        file_ext = Path(excel_file_path).suffix.lower()
+        
+        if file_ext == '.xlsx':
+            try:
+                workbook = openpyxl.load_workbook(excel_file_path, read_only=True)
+                worksheets = workbook.sheetnames
+                workbook.close()
+                return worksheets
+            except Exception:
+                return ["Sheet1"]  # Fallback
+                        
+        elif file_ext == '.xls':
+            try:
+                import xlrd
+                workbook = xlrd.open_workbook(excel_file_path)
+                return workbook.sheet_names()
+            except ImportError:
+                return ["Sheet1"]  # Fallback instead of "All worksheets"
+            except Exception:
+                return ["Sheet1"]
+        
+        return []
+        
+    except Exception:
+        return []
+
+# Add the missing extract_ole_images_from_xls_comprehensive function that was referenced
+def extract_ole_images_from_xls_comprehensive(xls_file_path, output_dir):
+    """
+    Comprehensive extraction of embedded images from .xls files using binary parsing
+    """
+    extracted_files = []
+    count = 0
+    
+    try:
+        # Read the entire file as binary
+        with open(xls_file_path, 'rb') as f:
+            data = f.read()
+
+        # Enhanced image signatures
+        image_signatures = [
+            (b'\xFF\xD8\xFF\xE0', b'\xFF\xD9', 'jpg', 4),  # JFIF
+            (b'\xFF\xD8\xFF\xE1', b'\xFF\xD9', 'jpg', 4),  # EXIF
+            (b'\xFF\xD8\xFF\xDB', b'\xFF\xD9', 'jpg', 4),  # Standard JPEG
+            (b'\x89PNG\r\n\x1A\n', b'IEND\xaeB`\x82', 'png', 8),  # PNG
+            (b'GIF87a', b'\x00\x3B', 'gif', 6),  # GIF87a
+            (b'GIF89a', b'\x00\x3B', 'gif', 6),  # GIF89a
+            (b'BM', None, 'bmp', 2),  # BMP
+        ]
+
+        found_positions = set()
+
+        # Direct image signature search
+        for start_sig, end_sig, ext, min_header_size in image_signatures:
+            pos = 0
+            while True:
+                pos = data.find(start_sig, pos)
+                if pos == -1:
+                    break
+                
+                if pos in found_positions:
+                    pos += len(start_sig)
+                    continue
+
+                try:
+                    image_data = None
+                    
+                    if ext == 'jpg':
+                        # JPEG extraction
+                        end_pos = pos + len(start_sig)
+                        while end_pos < len(data) - 1:
+                            if data[end_pos] == 0xFF and data[end_pos + 1] == 0xD9:
+                                end_pos += 2
+                                image_data = data[pos:end_pos]
+                                break
+                            end_pos += 1
+                            if end_pos - pos > 10 * 1024 * 1024:  # 10MB max
+                                break
+                                
+                    elif ext == 'png':
+                        # PNG extraction
+                        end_pos = data.find(end_sig, pos)
+                        if end_pos != -1:
+                            end_pos += len(end_sig)
+                            image_data = data[pos:end_pos]
+                            
+                    elif ext == 'gif':
+                        # GIF extraction
+                        end_pos = data.find(end_sig, pos)
+                        if end_pos != -1:
+                            end_pos += len(end_sig)
+                            image_data = data[pos:end_pos]
+                            
+                    elif ext == 'bmp':
+                        # BMP extraction
+                        if pos + 18 <= len(data):
+                            try:
+                                import struct
+                                file_size = struct.unpack('<I', data[pos + 2:pos + 6])[0]
+                                if 54 <= file_size <= 50 * 1024 * 1024 and pos + file_size <= len(data):
+                                    image_data = data[pos:pos + file_size]
+                            except:
+                                pass
+
+                    # Validate and save image
+                    if image_data and len(image_data) >= min_header_size:
+                        if validate_and_save_image_improved(image_data, output_dir, ext, count):
+                            found_positions.add(pos)
+                            extracted_files.append(f"{output_dir}/extracted_image_{count + 1:03d}.{ext}")
+                            count += 1
+
+                except Exception as e:
+                    print(f"Error processing {ext} at position {pos}: {e}")
+
+                pos += 1
+
+        return count, extracted_files, None if count > 0 else "No images found using binary extraction"
+
+    except Exception as e:
+        return 0, [], f"Error reading .xls file: {str(e)}"
+
+def validate_and_save_image_improved(image_data, output_dir, ext, count):
+    """
+    Improved image validation and saving
+    """
+    try:
+        img_buffer = io.BytesIO(image_data)
+        
+        with PILImage.open(img_buffer) as img:
+            img.verify()
+            
+        img_buffer.seek(0)
+        with PILImage.open(img_buffer) as img:
+            width, height = img.size
+            
+            # Validate dimensions
+            if width < 1 or height < 1 or width > 20000 or height > 20000:
+                return False
+            
+            if width * height < 16:  # Less than 4x4 pixels
+                return False
+
+            # Convert problematic modes
+            if img.mode in ('P', 'LA'):
+                img = img.convert('RGBA')
+            elif img.mode == '1':
+                img = img.convert('L')
+
+            # Handle transparency for JPEG
+            if ext == 'jpg' and img.mode in ('RGBA', 'LA'):
+                background = PILImage.new('RGB', img.size, (255, 255, 255))
+                if img.mode == 'RGBA':
+                    background.paste(img, mask=img.split()[-1])
+                else:
+                    background.paste(img.convert('RGBA'), mask=img.split()[-1])
+                img = background
+
+            # Save image
+            output_path = f"{output_dir}/extracted_image_{count + 1:03d}.{ext}"
+            
+            if ext == 'jpg':
+                img.save(output_path, 'JPEG', quality=95, optimize=True)
+            elif ext == 'png':
+                img.save(output_path, 'PNG', optimize=True)
+            elif ext == 'gif':
+                if img.mode != 'P':
+                    img = img.convert('P', palette=PILImage.ADAPTIVE)
+                img.save(output_path, 'GIF', optimize=True)
+            else:
+                img.save(output_path)
+
+            return True
+
+    except Exception as e:
+        print(f"Image validation failed: {e}")
+        return False
+
+def extract_images_from_xlsx_by_sheet(xlsx_path, output_dir, target_sheet=None):
+    """
+    Extract images from .xlsx files with reliable sheet-specific extraction
+    Uses openpyxl to directly access worksheet images
+    """
+    try:
+        extracted_files = []
+        image_count = 0
+        
+        # Load workbook with openpyxl
+        workbook = openpyxl.load_workbook(xlsx_path, data_only=True)
+        available_sheets = workbook.sheetnames
+        
+        # Determine which sheets to process
+        if target_sheet is None or target_sheet == "All worksheets":
+            sheets_to_process = available_sheets
+        else:
+            sheets_to_process = [target_sheet] if target_sheet in available_sheets else []
+        
+        if not sheets_to_process:
+            workbook.close()
+            return 0, [], "No valid sheets found to extract from", available_sheets
+        
+        # Process each sheet
+        for sheet_name in sheets_to_process:
+            try:
+                worksheet = workbook[sheet_name]
+                
+                # Check if worksheet has any images
+                if hasattr(worksheet, '_images') and worksheet._images:
+                    sheet_image_count = 0
+                    for image in worksheet._images:
+                        try:
+                            # Get image data
+                            if hasattr(image, '_data'):
+                                image_data = image._data()
+                            else:
+                                # Try alternative method
+                                continue
+                            
+                            # Determine file extension from image format
+                            image_format = 'png'  # default
+                            if hasattr(image, 'format') and image.format:
+                                image_format = image.format.lower()
+                            elif len(image_data) > 4:
+                                # Try to detect format from data
+                                if image_data[:4] == b'\x89PNG':
+                                    image_format = 'png'
+                                elif image_data[:3] == b'\xFF\xD8\xFF':
+                                    image_format = 'jpg'
+                                elif image_data[:6] == b'GIF87a' or image_data[:6] == b'GIF89a':
+                                    image_format = 'gif'
+                            
+                            # Create filename
+                            if len(sheets_to_process) > 1:
+                                filename = f"{sheet_name}_image_{sheet_image_count + 1:03d}.{image_format}"
+                            else:
+                                filename = f"image_{sheet_image_count + 1:03d}.{image_format}"
+                            
+                            # Save image
+                            output_path = os.path.join(output_dir, filename)
+                            with open(output_path, 'wb') as f:
+                                f.write(image_data)
+                            
+                            extracted_files.append(output_path)
+                            sheet_image_count += 1
+                            image_count += 1
+                            
+                        except Exception as e:
+                            print(f"Error extracting image from {sheet_name}: {e}")
+                            continue
+                    
+                    print(f"Extracted {sheet_image_count} images from sheet: {sheet_name}")
+                
+                # Also check for drawing objects (alternative method)
+                if hasattr(worksheet, 'drawing') and worksheet.drawing:
+                    for drawing in worksheet.drawing:
+                        if hasattr(drawing, '_images'):
+                            for img in drawing._images:
+                                try:
+                                    # Similar extraction logic for drawing images
+                                    if hasattr(img, '_data'):
+                                        image_data = img._data()
+                                        image_format = 'png'
+                                        
+                                        if len(sheets_to_process) > 1:
+                                            filename = f"{sheet_name}_drawing_{image_count + 1:03d}.{image_format}"
+                                        else:
+                                            filename = f"drawing_{image_count + 1:03d}.{image_format}"
+                                        
+                                        output_path = os.path.join(output_dir, filename)
+                                        with open(output_path, 'wb') as f:
+                                            f.write(image_data)
+                                        
+                                        extracted_files.append(output_path)
+                                        image_count += 1
+                                        
+                                except Exception:
+                                    continue
+                            
+            except Exception as e:
+                print(f"Error processing sheet {sheet_name}: {e}")
+                continue
+        
+        workbook.close()
+        
+        # If openpyxl method didn't find images, fall back to zip extraction
+        if image_count == 0:
+            return extract_images_from_xlsx_zip_method(xlsx_path, output_dir, target_sheet)
+        
+        return image_count, extracted_files, None, available_sheets
+        
+    except Exception as e:
+        return extract_images_from_xlsx_zip_method(xlsx_path, output_dir, target_sheet)
+
+def extract_images_from_xlsx_zip_method(xlsx_path, output_dir, target_sheet=None):
+    """
+    Fallback method: Extract all images from xlsx using zip method
+    """
+    try:
+        extracted_files = []
+        image_count = 0
+        
+        with zipfile.ZipFile(xlsx_path, 'r') as zip_ref:
+            # Get available sheets
+            available_sheets = []
+            try:
+                with zip_ref.open('xl/workbook.xml') as f:
+                    content = f.read().decode('utf-8')
+                sheet_matches = re.findall(r'<sheet name="([^"]+)"', content)
+                available_sheets = [match for match in sheet_matches]
+            except:
+                available_sheets = ["Sheet1"]
+            
+            # Find all media files
+            media_files = [f for f in zip_ref.namelist() if f.startswith('xl/media/')]
+            
+            if not media_files:
+                return 0, [], "No images found in Excel file", available_sheets
+            
+            # Extract all images (since precise sheet mapping is complex)
+            for media_file in media_files:
+                try:
+                    image_data = zip_ref.read(media_file)
+                    original_filename = os.path.basename(media_file)
+                    
+                    # Create output filename
+                    if target_sheet and target_sheet != "All worksheets":
+                        output_filename = f"{target_sheet}_{original_filename}"
+                    else:
+                        output_filename = original_filename
+                    
+                    output_path = os.path.join(output_dir, output_filename)
+                    
+                    with open(output_path, 'wb') as f:
+                        f.write(image_data)
+                    
+                    extracted_files.append(output_path)
+                    image_count += 1
+                    
+                except Exception as e:
+                    print(f"Error extracting {media_file}: {e}")
+                    continue
+        
+        warning_msg = None
+        if target_sheet and target_sheet != "All worksheets":
+            warning_msg = f"Note: Extracted all images from file. Sheet-specific extraction not fully supported with this method."
+        
+        return image_count, extracted_files, warning_msg, available_sheets
+        
+    except Exception as e:
+        return 0, [], f"Error processing Excel file: {str(e)}", []
+
 def excel_extractor_tool():
     st.header("Excel Image Extractor")
-    st.markdown("Upload Excel files (.xlsx) to extract embedded images from them.")
+    st.markdown("Upload Excel files (.xlsx) to extract embedded images from specific sheets.")
     
     # File upload for Excel files
     uploaded_files = st.file_uploader(
@@ -991,48 +1868,132 @@ def excel_extractor_tool():
         type=['xlsx'],
         accept_multiple_files=True,
         help="Upload one or more .xlsx files to extract embedded images.",
-        key="excel_upload"
+        key="excel_upload_fixed"
     )
     
     if uploaded_files:
-        if st.button("Extract Images", type="primary", key="extract_btn"):
+        # For each file, let user select sheets
+        sheet_selections = {}
+        
+        for uploaded_file in uploaded_files:
+            # Temporarily save file to read sheet names
+            temp_dir = tempfile.mkdtemp()
+            temp_path = os.path.join(temp_dir, uploaded_file.name)
+            
+            with open(temp_path, 'wb') as f:
+                f.write(uploaded_file.getbuffer())
+            
+            try:
+                # Get available sheets using the simple function
+                available_sheets = get_excel_worksheets_simple(temp_path)
+                
+                if available_sheets:
+                    st.subheader(f"Select sheets from: {uploaded_file.name}")
+                    
+                    # Add "All sheets" option
+                    all_options = ["All worksheets"] + available_sheets
+                    
+                    selected = st.multiselect(
+                        f"Choose sheets to extract images from:",
+                        all_options,
+                        default=["All worksheets"],
+                        help="Select specific sheets or 'All worksheets' to extract from all sheets",
+                        key=f"sheets_fixed_{uploaded_file.name}"
+                    )
+                    
+                    if "All worksheets" in selected:
+                        sheet_selections[uploaded_file.name] = available_sheets
+                    else:
+                        sheet_selections[uploaded_file.name] = [s for s in selected if s != "All worksheets"]
+                else:
+                    st.warning(f"Could not read sheets from {uploaded_file.name}")
+                    sheet_selections[uploaded_file.name] = []
+                    
+            except Exception as e:
+                st.error(f"Error reading {uploaded_file.name}: {str(e)}")
+                sheet_selections[uploaded_file.name] = []
+            
+            # Clean up
+            try:
+                os.remove(temp_path)
+                os.rmdir(temp_dir)
+            except:
+                pass
+        
+        if st.button("Extract Images", type="primary", key="extract_btn_fixed"):
             temp_dir = tempfile.mkdtemp()
             all_extracted_files = []
             total_images = 0
+            extraction_results = []
             
             progress_bar = st.progress(0)
             status_text = st.empty()
             
             for i, uploaded_file in enumerate(uploaded_files):
-                status_text.text(f"Processing {uploaded_file.name}...")
+                file_name = uploaded_file.name
+                selected_sheets = sheet_selections.get(file_name, [])
+                
+                if not selected_sheets:
+                    st.warning(f"No sheets selected for {file_name}, skipping...")
+                    continue
+                
+                status_text.text(f"Processing {file_name}...")
                 progress_bar.progress((i + 1) / len(uploaded_files))
                 
                 # Save uploaded file temporarily
-                temp_xlsx_path = os.path.join(temp_dir, uploaded_file.name)
+                temp_xlsx_path = os.path.join(temp_dir, file_name)
                 with open(temp_xlsx_path, 'wb') as f:
                     f.write(uploaded_file.getbuffer())
                 
                 # Create output directory for this file
-                output_dir = os.path.join(temp_dir, f"{Path(uploaded_file.name).stem}_images")
+                output_dir = os.path.join(temp_dir, f"{Path(file_name).stem}_images")
                 os.makedirs(output_dir, exist_ok=True)
                 
-                # Extract images
-                count, extracted_files, error = extract_images_from_xlsx(temp_xlsx_path, output_dir)
+                # Extract images for each selected sheet individually
+                file_total = 0
+                for sheet_name in selected_sheets:
+                    sheet_output_dir = os.path.join(output_dir, sheet_name.replace('/', '_').replace('\\', '_'))
+                    os.makedirs(sheet_output_dir, exist_ok=True)
+                    
+                    count, extracted_files, error, _ = extract_images_from_xlsx_by_sheet(
+                        temp_xlsx_path, 
+                        sheet_output_dir, 
+                        sheet_name
+                    )
+                    
+                    if error:
+                        st.warning(f"Issue with {file_name} - {sheet_name}: {error}")
+                    
+                    if count > 0:
+                        extraction_results.append(f"✅ {file_name} - {sheet_name}: {count} images")
+                        all_extracted_files.extend(extracted_files)
+                        file_total += count
+                    else:
+                        extraction_results.append(f"⚪ {file_name} - {sheet_name}: No images found")
                 
-                if error:
-                    st.error(f"Error processing {uploaded_file.name}: {error}")
-                elif count > 0:
-                    st.success(f"Extracted {count} image(s) from {uploaded_file.name}")
-                    all_extracted_files.extend(extracted_files)
-                    total_images += count
+                total_images += file_total
+                if file_total > 0:
+                    st.success(f"Extracted {file_total} images from {file_name}")
                 else:
-                    st.warning(f"No images found in {uploaded_file.name}")
+                    st.info(f"No images found in {file_name}")
             
             status_text.empty()
             progress_bar.empty()
             
+            # Show detailed extraction results
+            with st.expander("Detailed Extraction Results"):
+                for result in extraction_results:
+                    st.write(result)
+            
             if total_images > 0:
                 st.success(f"Total: {total_images} images extracted from {len(uploaded_files)} file(s)")
+                
+                # Show extracted files summary
+                with st.expander("Extracted Files Summary"):
+                    for file_path in all_extracted_files[:20]:  # Show first 20
+                        st.write(f"📄 {os.path.relpath(file_path, temp_dir)}")
+                    if len(all_extracted_files) > 20:
+                        st.info(f"Showing first 20 files. Total extracted: {len(all_extracted_files)}")
                 
                 # Create zip file with all extracted images
                 zip_buffer = io.BytesIO()
@@ -1048,47 +2009,19 @@ def excel_extractor_tool():
                 st.download_button(
                     label="Download All Extracted Images (ZIP)",
                     data=zip_buffer.getvalue(),
-                    file_name="extracted_images.zip",
+                    file_name="extracted_images_by_sheet.zip",
                     mime="application/zip"
                 )
-                
-                # Show preview of extracted images
-                with st.expander("Preview Extracted Images"):
-                    cols = st.columns(3)
-                    col_idx = 0
-                    
-                    for file_path in all_extracted_files[:12]:  # Show max 12 images
-                        try:
-                            with cols[col_idx % 3]:
-                                img = PILImage.open(file_path)
-                                st.image(img, caption=os.path.basename(file_path), use_column_width =True)
-                            col_idx += 1
-                        except Exception as e:
-                            st.write(f"Could not preview {os.path.basename(file_path)}")
-                    
-                    if len(all_extracted_files) > 12:
-                        st.info(f"Showing first 12 images. Total extracted: {len(all_extracted_files)}")
             
             else:
-                st.info("No images were found in the uploaded Excel file(s).")
+                st.info("No images were found in the selected sheets of the uploaded Excel file(s).")
     
     else:
-        st.info("👆 Please upload Excel file(s) to get started.")
+        st.info("Please upload Excel file(s) to get started.")
         
-        # Instructions for Excel extractor
-        with st.expander("📖 How to use Excel Image Extractor"):
+        with st.expander("Instructions"):
             st.markdown("""
-            **How it works:**
-            
-            1. Upload one or more Excel files (.xlsx format)
-            2. The tool will scan for embedded images in the Excel files
-            3. All found images will be extracted and made available for download
-            4. Images are packaged in a ZIP file for easy download
-            
-            **Note:** 
-            - Only .xlsx files are supported (not .xls)
-            - Images must be embedded in the Excel file (not linked)
-            - Common image formats (PNG, JPG, etc.) are extracted
+ 
             """)
 
 def file_renamer_tool():
@@ -1099,7 +2032,7 @@ def file_renamer_tool():
     uploaded_file = st.file_uploader(
         "Choose a ZIP file",
         type=['zip'],
-        help="Upload a zip file containing your brand folders with assets.",
+        # help="Upload a zip file containing your brand folders with assets.",
         key="renamer_zip_upload"
     )
     
@@ -1122,6 +2055,7 @@ def file_renamer_tool():
             # Process files
             total_files = 0
             processed_files = []
+            file_type_counts = {"images": 0, "text": 0, "videos": 0}
             
             for subfolder in input_folder.iterdir():
                 if subfolder.is_dir():
@@ -1136,9 +2070,20 @@ def file_renamer_tool():
                             shutil.copy2(file, target_path)
                             processed_files.append((file.name, new_name, markenname))
                             total_files += 1
+                            
+                            # Count file types
+                            if file.suffix.lower() in ALLOWED_IMAGE_EXTENSIONS:
+                                file_type_counts["images"] += 1
+                            elif file.suffix.lower() in ALLOWED_TEXT_EXTENSIONS:
+                                file_type_counts["text"] += 1
+                            elif file.suffix.lower() in ALLOWED_VIDEO_EXTENSIONS:
+                                file_type_counts["videos"] += 1
             
             if total_files > 0:
                 st.success(f"Successfully renamed and copied {total_files} files")
+                
+                # Show file type breakdown
+                st.info(f"File types processed: {file_type_counts['images']} images, {file_type_counts['text']} text files, {file_type_counts['videos']} videos")
                 
                 # Show preview
                 with st.expander("📋 Preview renamed files"):
@@ -1194,21 +2139,12 @@ def file_renamer_tool():
             - Provide a zip file with all renamed files
             
             **Supported file types:**
-            - Images: JPG, JPEG, PNG, BMP, GIF, TIFF, WEBP
-            - Text files: TXT, MD, CSV
+            - **Images:** JPG, JPEG, PNG, BMP, GIF, TIFF, WEBP
+            - **Text files:** TXT, MD, CSV
+            - **Videos:** MP4, AVI, MOV, WMV, FLV, MKV, WEBM, M4V, 3GP, OGV
             """)
 
-def main():
-    st.title("🔧 Brand Assets Tools")
 
-    tab1, tab2, tab3 = st.tabs(["PDF Report Generator", "Excel Image Extractor", "Brand File Renamer"])
-
-    with tab1:
-        pdf_generator_tool()
-    with tab2:
-        excel_extractor_tool()
-    with tab3:
-        file_renamer_tool()
 
 def white_to_transparent_tool():
     st.header("White Background to Transparent")
@@ -1289,7 +2225,8 @@ def white_to_transparent_tool():
                         
                         # Save the processed image
                         new_filename = os.path.splitext(uploaded_file.name)[0] + ".png"
-                        processed_path = os.path.join(temp_dir, "processed_" + new_filename)
+                        processed_path = os.path.join(temp_dir, 
+                                                       new_filename)
                         result_img.save(processed_path)
                         processed_files.append(processed_path)
                     else:
@@ -1326,7 +2263,7 @@ def white_to_transparent_tool():
                     for i, file_path in enumerate(processed_files[:6]):  # Show max 6 images
                         with cols[i % 3]:
                             img = PILImage.open(file_path)
-                            st.image(img, caption=os.path.basename(file_path), use_column_width=True)
+                            st.image(img, caption=os.path.basename(file_path), use_container_width=True)
                     
                     if len(processed_files) > 6:
                         st.info(f"Showing first 6 images. Total processed: {len(processed_files)}")
@@ -1418,12 +2355,12 @@ def find_smallest_dimensions_tool():
                     with col1:
                         st.subheader("Smallest Width")
                         st.write(f"Dimensions: {min_width} × {height_at_min_width} px")
-                        st.image(file_min_width, caption=os.path.basename(file_min_width), use_column_width =True)
+                        st.image(file_min_width, caption=os.path.basename(file_min_width), use_container_width =True)
                     
                     with col2:
                         st.subheader("Smallest Height")
                         st.write(f"Dimensions: {width_at_min_height} × {min_height} px")
-                        st.image(file_min_height, caption=os.path.basename(file_min_height), use_column_width =True)
+                        st.image(file_min_height, caption=os.path.basename(file_min_height), use_container_width =True)
                 else:
                     st.warning("No valid image files found in the uploaded zip.")
         
@@ -1611,7 +2548,7 @@ def resize_with_transparent_canvas_tool():
                             for i, file_path in enumerate(sample_files):
                                 with cols[i % 3]:
                                     img = PILImage.open(file_path)
-                                    st.image(img, caption=os.path.basename(file_path), use_column_width=True)
+                                    st.image(img, caption=os.path.basename(file_path), use_container_width=True)
                         
                         if processed_count > 6:
                             st.info(f"Showing sample images. Total processed: {processed_count}")
@@ -1764,7 +2701,7 @@ def center_on_canvas_tool():
                         for i, file_path in enumerate(sample_files):
                             with cols[i % 3]:
                                 img = PILImage.open(file_path)
-                                st.image(img, caption=os.path.basename(file_path), use_column_width=True)
+                                st.image(img, caption=os.path.basename(file_path), use_container_width=True)
                         
                         if processed_count > 6:
                             st.info(f"Showing sample images. Total processed: {processed_count}")
@@ -2151,7 +3088,7 @@ def brand_renamer_tool():
     uploaded_file = st.file_uploader(
         "Choose a ZIP file",
         type=['zip'],
-        help="Upload a zip file containing your brand folders with assets."
+       # help="Upload a zip file containing your brand folders with assets."
     )
    
     # Reset processing state when new file is uploaded
@@ -2354,14 +3291,14 @@ def main():
     st.title("🔧 Brand Assets Tools")
 
     tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
-        "Excel Image Extractor", 
-        "Brand File Renamer",
-        "PDF Report Generator", 
-        "Advanced Brand Processor",
+        "Extract Images from Excel", 
+        "Name assets by brand",
+        "Asset Overview", 
+        "Name stims by block + create output files​",
         "Find Smallest Dimensions",
-        "Resize with Transparent Canvas",
-        "Center on Canvas",
-        "White to Transparent",
+        "Resize",
+        "Place on Canvas",
+        "Canvas white to Transparent",
     ])
 
     with tab1:
