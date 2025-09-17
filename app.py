@@ -171,7 +171,7 @@ def build_marken_einzelseiten(alle_dateien_pro_marke, styles, gesamtbreite):
 
         if not dateien:
             elements.append(Paragraph("No assets found in this brand folder.", styles['Normal']))
-            elements.append(PageBreak())
+           # elements.append(PageBreak())
             continue
 
         table_data = []
@@ -486,7 +486,7 @@ def add_brand_pages_with_final_labels(elements, marken_spalten, renamed_files_by
         elements.append(table)
 
 def generate_two_section_pdf_report(input_folder, erste_marke=None):
-    """Generate PDF report with two sections: by block and by brand - WITH EXTENSIONS - NO BLANK PAGES"""
+    """Generate PDF report with two sections: by block and by brand - WITH EXTENSIONS"""
     marken_set, renamed_files_by_folder_and_marke, all_files = analyze_files_by_filename(input_folder)
     
     if not marken_set:
@@ -518,15 +518,7 @@ def generate_two_section_pdf_report(input_folder, erste_marke=None):
     elements.append(Paragraph("<b>Section 1: Assets by Block</b>", styles['Title']))
     elements.append(Spacer(1, 20))
 
-    folders_with_content = []
     for folder in sorted(renamed_files_by_folder_and_marke):
-        abschnitt = renamed_files_by_folder_and_marke[folder]
-        # Check if this folder has any content
-        total_files_in_folder = sum(len(abschnitt.get(marke, [])) for _, marke in marken_spalten)
-        if total_files_in_folder > 0:
-            folders_with_content.append(folder)
-
-    for i, folder in enumerate(folders_with_content):
         elements.append(Paragraph(f"<b>Folder: {folder}</b>", styles['Heading2']))
 
         abschnitt = renamed_files_by_folder_and_marke[folder]
@@ -545,57 +537,38 @@ def generate_two_section_pdf_report(input_folder, erste_marke=None):
         col_data = []
         max_rows = 0
         
-        # Only process brands that have content in this folder
-        brands_with_content = []
-        for nummer, marke in marken_spalten:
-            if len(abschnitt.get(marke, [])) > 0:
-                brands_with_content.append((nummer, marke))
-        
-        if brands_with_content:  # Only create table if there's content
-            headers = [f"{nummer} ({marke})" for nummer, marke in brands_with_content]
-            data = [headers]
-            col_data = []
-            max_rows = 0
-            
-            for _, marke in brands_with_content:
-                eintraege = abschnitt.get(marke, [])
-                zellen = []
-                for p, original_name in eintraege:
-                    # Generate the ID name - KEEP THE FILE EXTENSION
-                    blocknummer = re.sub(r'\D', '', folder)[:2].zfill(2)
-                    markennummer = marken_index[marke]
-                    cleaned = get_cleaned_filename_without_brand(original_name, marke)
-                    # Keep the original file extension
-                    file_extension = Path(original_name).suffix
-                    id_name = f"{markennummer}B{blocknummer}{marke}{cleaned}{file_extension}"
-                    
-                    # Pass the full filename with extension to get_asset_cell
-                    cell = get_asset_cell(p, id_name, len(headers))
-                    zellen.append(cell)
-                col_data.append(zellen)
-                max_rows = max(max_rows, len(zellen))
+        for _, marke in marken_spalten:
+            eintraege = abschnitt.get(marke, [])
+            zellen = []
+            for p, original_name in eintraege:
+                # Generate the ID name - KEEP THE FILE EXTENSION
+                blocknummer = re.sub(r'\D', '', folder)[:2].zfill(2)
+                markennummer = marken_index[marke]
+                cleaned = get_cleaned_filename_without_brand(original_name, marke)
+                # Keep the original file extension
+                file_extension = Path(original_name).suffix
+                id_name = f"{markennummer}B{blocknummer}{marke}{cleaned}{file_extension}"
+                
+                # Pass the full filename with extension to get_asset_cell
+                cell = get_asset_cell(p, id_name, len(headers))
+                zellen.append(cell)
+            col_data.append(zellen)
+            max_rows = max(max_rows, len(zellen))
 
-            for row_idx in range(max_rows):
-                row = []
-                for col in col_data:
-                    row.append(col[row_idx] if row_idx < len(col) else "")
-                data.append(row)
+        for i in range(max_rows):
+            row = []
+            for col in col_data:
+                row.append(col[i] if i < len(col) else "")
+            data.append(row)
 
-            col_width = (A4[0] - 40) / len(headers)
-            t = Table(data, colWidths=[col_width] * len(headers))
-            t.setStyle(TableStyle([
-                ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
-                ('BACKGROUND', (0, 0), (-1, 0), colors.lightgrey),
-                ('VALIGN', (0, 0), (-1, -1), 'TOP'),
-            ]))
-            elements.append(t)
-
-        # Only add page break if this is not the last folder with content
-        if i < len(folders_with_content) - 1:
-            elements.append(PageBreak())
-
-    # Add page break before Section 2 only if Section 1 had content
-    if folders_with_content:
+        col_width = (A4[0] - 40) / len(headers)
+        t = Table(data, colWidths=[col_width] * len(headers))
+        t.setStyle(TableStyle([
+            ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+            ('BACKGROUND', (0, 0), (-1, 0), colors.lightgrey),
+            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+        ]))
+        elements.append(t)
         elements.append(PageBreak())
 
     # SECTION 2: BY BRAND
@@ -611,22 +584,16 @@ def generate_two_section_pdf_report(input_folder, erste_marke=None):
     
     gesamt = 0
     summary = []
-    brands_with_assets = []  # Track which brands actually have assets
     for nummer, marke in marken_spalten:
         count = global_counts[marke]
-        if count > 0:  # Only include brands with assets
-            summary.append(f"{marke}: {count} assets")
-            brands_with_assets.append((nummer, marke))
+        summary.append(f"{marke}: {count} assets")
         gesamt += count
     summary.append(f"Total number of all assets: {gesamt}")
     elements.append(Paragraph("<br/>".join(summary), styles['Normal']))
-    
-    # Only add page break if there are brands to show
-    if brands_with_assets:
-        elements.append(PageBreak())
+    elements.append(PageBreak())
 
-    # Individual brand pages - only for brands that have assets
-    for i, (nummer, marke) in enumerate(brands_with_assets):
+    # Individual brand pages
+    for nummer, marke in marken_spalten:
         assets = []
         for folder in renamed_files_by_folder_and_marke:
             folder_assets = renamed_files_by_folder_and_marke[folder].get(marke, [])
@@ -643,13 +610,10 @@ def generate_two_section_pdf_report(input_folder, erste_marke=None):
                 assets.append((pfad, id_name))
                 brand_counter += 1
 
-        if not assets:  # Skip brands with no assets
+        if not assets:
             continue
 
-        # Only add page break if this is not the first brand
-        if i > 0:
-            elements.append(PageBreak())
-            
+        #elements.append(PageBreak())
         elements.append(Paragraph(f"<b>Brand Overview: {nummer} – {marke}</b>", styles['Heading2']))
         elements.append(Spacer(1, 6))
         elements.append(Paragraph(f"Assets per Brand: {', '.join([f'{k}: {len([a for a in assets if extract_brand(Path(a[1]).stem) == k])}' for k in [marke]])}", styles['Normal']))
@@ -659,7 +623,7 @@ def generate_two_section_pdf_report(input_folder, erste_marke=None):
         headers = ["Asset"] * 4
         data = [headers]
         row = []
-        for asset_idx, (pfad, id_name) in enumerate(assets):
+        for i, (pfad, id_name) in enumerate(assets):
             # Pass the full filename with extension to get_asset_cell
             cell = get_asset_cell(pfad, id_name, 4)
             row.append(cell)
