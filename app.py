@@ -104,13 +104,29 @@ def get_files_by_marke(input_folder, marken):
     return spalteninhalte
 
 def get_asset_cell(file_path, filename, col_count):
-    """Create optimized asset cell for PDF with better image handling"""
+    """Create optimized asset cell for PDF with proper transparency handling"""
     ext = Path(file_path).suffix.lower()
     styles = getSampleStyleSheet()
     
     try:
         if ext in ALLOWED_IMAGE_EXTENSIONS:
             with PILImage.open(file_path) as img:
+                # Preserve transparency if available
+                if img.mode in ('RGBA', 'LA') or (img.mode == 'P' and 'transparency' in img.info):
+                    # Create a white background for the PDF (transparency doesn't work well in PDF)
+                    background = PILImage.new('RGB', img.size, (255, 255, 255))
+                    if img.mode == 'RGBA':
+                        # Paste the image onto the white background using the alpha channel as mask
+                        background.paste(img, mask=img.split()[-1])
+                    else:
+                        # For other transparent modes, convert to RGBA first
+                        img_rgba = img.convert('RGBA')
+                        background.paste(img_rgba, mask=img_rgba.split()[-1])
+                    img = background.convert('RGB')
+                else:
+                    # Convert non-transparent images to RGB
+                    img = img.convert('RGB')
+                
                 orig_width, orig_height = img.size
                 available_width = A4[0] - 40
                 max_width = available_width / col_count
@@ -125,8 +141,9 @@ def get_asset_cell(file_path, filename, col_count):
                     width = height * aspect_ratio
 
                 buffer = io.BytesIO()
-                img.convert("RGB").save(buffer, format='PNG')
+                img.save(buffer, format='PNG')
                 buffer.seek(0)
+                
                 rl_img = RLImage(buffer, width=width, height=height)
 
                 frame = KeepInFrame(max_width, max_height + 30, content=[
@@ -139,6 +156,7 @@ def get_asset_cell(file_path, filename, col_count):
             return Paragraph(f"{filename}", styles['Normal'])
     except Exception as e:
         return Paragraph(f"[Image Error]<br/>{filename}", styles['Normal'])
+    
 
 def build_marken_einzelseiten(alle_dateien_pro_marke, styles, gesamtbreite):
     """Build individual brand overview pages (original method)"""
@@ -468,7 +486,7 @@ def add_brand_pages_with_final_labels(elements, marken_spalten, renamed_files_by
         elements.append(table)
 
 def generate_two_section_pdf_report(input_folder, erste_marke=None):
-    """Generate PDF report with two sections: by block and by brand"""
+    """Generate PDF report with two sections: by block and by brand - WITH EXTENSIONS - NO BLANK PAGES"""
     marken_set, renamed_files_by_folder_and_marke, all_files = analyze_files_by_filename(input_folder)
     
     if not marken_set:
@@ -500,7 +518,15 @@ def generate_two_section_pdf_report(input_folder, erste_marke=None):
     elements.append(Paragraph("<b>Section 1: Assets by Block</b>", styles['Title']))
     elements.append(Spacer(1, 20))
 
+    folders_with_content = []
     for folder in sorted(renamed_files_by_folder_and_marke):
+        abschnitt = renamed_files_by_folder_and_marke[folder]
+        # Check if this folder has any content
+        total_files_in_folder = sum(len(abschnitt.get(marke, [])) for _, marke in marken_spalten)
+        if total_files_in_folder > 0:
+            folders_with_content.append(folder)
+
+    for i, folder in enumerate(folders_with_content):
         elements.append(Paragraph(f"<b>Folder: {folder}</b>", styles['Heading2']))
 
         abschnitt = renamed_files_by_folder_and_marke[folder]
@@ -519,35 +545,57 @@ def generate_two_section_pdf_report(input_folder, erste_marke=None):
         col_data = []
         max_rows = 0
         
-        for _, marke in marken_spalten:
-            eintraege = abschnitt.get(marke, [])
-            zellen = []
-            for p, original_name in eintraege:
-                # Generate the ID name
-                blocknummer = re.sub(r'\D', '', folder)[:2].zfill(2)
-                markennummer = marken_index[marke]
-                cleaned = get_cleaned_filename_without_brand(original_name, marke)
-                id_name = f"{markennummer}B{blocknummer}{marke}{cleaned}"
-                
-                cell = get_asset_cell(p, id_name, len(headers))
-                zellen.append(cell)
-            col_data.append(zellen)
-            max_rows = max(max_rows, len(zellen))
+        # Only process brands that have content in this folder
+        brands_with_content = []
+        for nummer, marke in marken_spalten:
+            if len(abschnitt.get(marke, [])) > 0:
+                brands_with_content.append((nummer, marke))
+        
+        if brands_with_content:  # Only create table if there's content
+            headers = [f"{nummer} ({marke})" for nummer, marke in brands_with_content]
+            data = [headers]
+            col_data = []
+            max_rows = 0
+            
+            for _, marke in brands_with_content:
+                eintraege = abschnitt.get(marke, [])
+                zellen = []
+                for p, original_name in eintraege:
+                    # Generate the ID name - KEEP THE FILE EXTENSION
+                    blocknummer = re.sub(r'\D', '', folder)[:2].zfill(2)
+                    markennummer = marken_index[marke]
+                    cleaned = get_cleaned_filename_without_brand(original_name, marke)
+                    # Keep the original file extension
+                    file_extension = Path(original_name).suffix
+                    id_name = f"{markennummer}B{blocknummer}{marke}{cleaned}{file_extension}"
+                    
+                    # Pass the full filename with extension to get_asset_cell
+                    cell = get_asset_cell(p, id_name, len(headers))
+                    zellen.append(cell)
+                col_data.append(zellen)
+                max_rows = max(max_rows, len(zellen))
 
-        for i in range(max_rows):
-            row = []
-            for col in col_data:
-                row.append(col[i] if i < len(col) else "")
-            data.append(row)
+            for row_idx in range(max_rows):
+                row = []
+                for col in col_data:
+                    row.append(col[row_idx] if row_idx < len(col) else "")
+                data.append(row)
 
-        col_width = (A4[0] - 40) / len(headers)
-        t = Table(data, colWidths=[col_width] * len(headers))
-        t.setStyle(TableStyle([
-            ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
-            ('BACKGROUND', (0, 0), (-1, 0), colors.lightgrey),
-            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
-        ]))
-        elements.append(t)
+            col_width = (A4[0] - 40) / len(headers)
+            t = Table(data, colWidths=[col_width] * len(headers))
+            t.setStyle(TableStyle([
+                ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+                ('BACKGROUND', (0, 0), (-1, 0), colors.lightgrey),
+                ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+            ]))
+            elements.append(t)
+
+        # Only add page break if this is not the last folder with content
+        if i < len(folders_with_content) - 1:
+            elements.append(PageBreak())
+
+    # Add page break before Section 2 only if Section 1 had content
+    if folders_with_content:
         elements.append(PageBreak())
 
     # SECTION 2: BY BRAND
@@ -563,34 +611,45 @@ def generate_two_section_pdf_report(input_folder, erste_marke=None):
     
     gesamt = 0
     summary = []
+    brands_with_assets = []  # Track which brands actually have assets
     for nummer, marke in marken_spalten:
         count = global_counts[marke]
-        summary.append(f"{marke}: {count} assets")
+        if count > 0:  # Only include brands with assets
+            summary.append(f"{marke}: {count} assets")
+            brands_with_assets.append((nummer, marke))
         gesamt += count
     summary.append(f"Total number of all assets: {gesamt}")
     elements.append(Paragraph("<br/>".join(summary), styles['Normal']))
-    elements.append(PageBreak())
+    
+    # Only add page break if there are brands to show
+    if brands_with_assets:
+        elements.append(PageBreak())
 
-    # Individual brand pages
-    for nummer, marke in marken_spalten:
+    # Individual brand pages - only for brands that have assets
+    for i, (nummer, marke) in enumerate(brands_with_assets):
         assets = []
         for folder in renamed_files_by_folder_and_marke:
             folder_assets = renamed_files_by_folder_and_marke[folder].get(marke, [])
             brand_counter = 1  # Start counting from 1 for each brand in each folder
             for pfad, original_name in folder_assets:
-                # Generate the ID name with sequential count
+                # Generate the ID name with sequential count - KEEP THE FILE EXTENSION
                 blocknummer = re.sub(r'\D', '', folder)[:2].zfill(2)
                 markennummer = marken_index[marke]
                 count_str = f"{brand_counter:02d}"
                 cleaned = get_cleaned_filename_without_brand(original_name, marke)
-                id_name = f"{markennummer}B{blocknummer}{marke}{count_str}{cleaned}"
+                # Keep the original file extension
+                file_extension = Path(original_name).suffix
+                id_name = f"{markennummer}B{blocknummer}{marke}{count_str}{cleaned}{file_extension}"
                 assets.append((pfad, id_name))
                 brand_counter += 1
 
-        if not assets:
+        if not assets:  # Skip brands with no assets
             continue
 
-        elements.append(PageBreak())
+        # Only add page break if this is not the first brand
+        if i > 0:
+            elements.append(PageBreak())
+            
         elements.append(Paragraph(f"<b>Brand Overview: {nummer} – {marke}</b>", styles['Heading2']))
         elements.append(Spacer(1, 6))
         elements.append(Paragraph(f"Assets per Brand: {', '.join([f'{k}: {len([a for a in assets if extract_brand(Path(a[1]).stem) == k])}' for k in [marke]])}", styles['Normal']))
@@ -600,7 +659,8 @@ def generate_two_section_pdf_report(input_folder, erste_marke=None):
         headers = ["Asset"] * 4
         data = [headers]
         row = []
-        for i, (pfad, id_name) in enumerate(assets):
+        for asset_idx, (pfad, id_name) in enumerate(assets):
+            # Pass the full filename with extension to get_asset_cell
             cell = get_asset_cell(pfad, id_name, 4)
             row.append(cell)
             if len(row) == 4:
@@ -624,7 +684,6 @@ def generate_two_section_pdf_report(input_folder, erste_marke=None):
         return pdf_buffer, None
     except Exception as e:
         return None, f"Error generating PDF: {str(e)}"
-
 
 def brand_renamer_tool():
     st.header("Advanced Brand File Processor")
@@ -2387,7 +2446,7 @@ def find_smallest_dimensions_tool():
 
 def resize_with_transparent_canvas_tool():
     st.header("Resize with Transparent Canvas")
-    st.markdown("Resize images to a target dimension while maintaining aspect ratio on transparent background.")
+    st.markdown("Resize images to 400px on the largest side while maintaining aspect ratio on transparent background.")
     
     # File upload with unique key
     uploaded_file = st.file_uploader(
@@ -2398,35 +2457,8 @@ def resize_with_transparent_canvas_tool():
     )
     
     if uploaded_file:
-        # Options
-        col1, col2 = st.columns(2)
-        with col1:
-            mode = st.radio(
-                "Resize mode:",
-                ["By height", "By width"],
-                help="Resize all images to match either height or width while maintaining aspect ratio",
-                key="resize_mode_selector"
-            )
-        with col2:
-            # Set different limits based on mode
-            if mode == "By height":
-                target_value = st.number_input(
-                    "Target height (pixels):",
-                    min_value=10,       # Minimum 10px height
-                    max_value=4000,     # Maximum 4000px height
-                    value=1000,         # Default 1000px
-                    step=10,
-                    key="target_height_input"
-                )
-            else:  # By width
-                target_value = st.number_input(
-                    "Target width (pixels):",
-                    min_value=10,       # Minimum 10px width
-                    max_value=4000,     # Maximum 4000px width
-                    value=1000,         # Default 1000px
-                    step=10,
-                    key="target_width_input"
-                )
+        # Show the fixed resize setting
+        st.info("Images will be resized to 400px on the largest side (width or height), maintaining aspect ratio.")
         
         # Process button with unique key
         if st.button("Process Images", type="primary", key="process_resize_transparent_images"):
@@ -2471,32 +2503,27 @@ def resize_with_transparent_canvas_tool():
                             img = img.convert("RGBA")
                             orig_w, orig_h = img.size
                             
-                            if mode == "By height":
-                                # Calculate new dimensions based on target height
-                                factor = target_value / orig_h
-                                new_h = target_value
-                                new_w = int(orig_w * factor)
-                            else:  # By width
-                                # Calculate new dimensions based on target width
-                                factor = target_value / orig_w
-                                new_w = target_value
-                                new_h = int(orig_h * factor)
+                            # Calculate scaling factor based on largest side
+                            max_dimension = 400
+                            if orig_w >= orig_h:
+                                # Width is larger or equal
+                                scale_factor = max_dimension / orig_w
+                                new_w = max_dimension
+                                new_h = int(orig_h * scale_factor)
+                            else:
+                                # Height is larger
+                                scale_factor = max_dimension / orig_h
+                                new_h = max_dimension
+                                new_w = int(orig_w * scale_factor)
                             
                             # Resize image while maintaining aspect ratio
                             img_resized = img.resize((new_w, new_h), PILImage.LANCZOS)
                             
-                            # Create transparent canvas with target dimensions
-                            if mode == "By height":
-                                # For height mode, canvas matches the resized width and target height
-                                canvas = PILImage.new("RGBA", (new_w, new_h), (0, 0, 0, 0))
-                            else:
-                                # For width mode, canvas matches the target width and resized height
-                                canvas = PILImage.new("RGBA", (new_w, new_h), (0, 0, 0, 0))
+                            # Create transparent canvas with the exact resized dimensions
+                            canvas = PILImage.new("RGBA", (new_w, new_h), (0, 0, 0, 0))
                             
-                            # Center the resized image on the canvas
-                            x_offset = (canvas.width - img_resized.width) // 2
-                            y_offset = (canvas.height - img_resized.height) // 2
-                            canvas.paste(img_resized, (x_offset, y_offset), mask=img_resized)
+                            # The resized image fits perfectly on the canvas (no centering needed)
+                            canvas.paste(img_resized, (0, 0), mask=img_resized)
                             
                             canvas.save(new_path)
                             processed_count += 1
@@ -2512,6 +2539,7 @@ def resize_with_transparent_canvas_tool():
                 Processing complete!
                 - ✅ Processed: {processed_count} images
                 - ❌ Errors: {error_count} images
+                - All images resized to 400px on largest side
                 """)
                 
                 if processed_count > 0:
@@ -2530,12 +2558,12 @@ def resize_with_transparent_canvas_tool():
                     st.download_button(
                         label="📥 Download Resized Images (ZIP)",
                         data=zip_buffer.getvalue(),
-                        file_name="resized_transparent_images.zip",
+                        file_name="resized_400px_images.zip",
                         mime="application/zip",
                         key="download_resized_transparent"
                     )
                     
-                    # Show preview (removed key from expander)
+                    # Show preview
                     with st.expander("🖼️ Preview Resized Images"):
                         sample_files = []
                         for root, dirs, files in os.walk(output_folder):
@@ -2548,7 +2576,7 @@ def resize_with_transparent_canvas_tool():
                             for i, file_path in enumerate(sample_files):
                                 with cols[i % 3]:
                                     img = PILImage.open(file_path)
-                                    st.image(img, caption=os.path.basename(file_path), use_column_width=True)
+                                    st.image(img, caption=f"{os.path.basename(file_path)} ({img.size[0]}x{img.size[1]})", use_column_width=True)
                         
                         if processed_count > 6:
                             st.info(f"Showing sample images. Total processed: {processed_count}")
@@ -2559,31 +2587,28 @@ def resize_with_transparent_canvas_tool():
     else:
         st.info("👆 Please upload a zip file with images to resize.")
         
-        # Instructions (removed key from expander)
+        # Instructions
         with st.expander("📖 Instructions"):
             st.markdown("""
             **How to use this tool:**
             
             1. Upload a zip file containing images
-            2. Choose resize mode:
-               - By height: All images will be resized to match the target height
-               - By width: All images will be resized to match the target width
-            3. Set the target dimension (10-4000 pixels)
+            2. All images will be resized to 400px on their largest side (width or height)
+            3. Aspect ratio is maintained - smaller dimension will be scaled proportionally
             4. Click "Process Images"
             5. Download the resized images with transparent backgrounds
             
+            **Examples:**
+            - 1000x800 image → 400x320 image (width was larger)
+            - 600x1200 image → 200x400 image (height was larger)  
+            - 400x400 image → 400x400 image (already correct size)
+            
             **Features:**
             - Maintains original aspect ratio
-            - Centers images on transparent canvas
             - Outputs PNG files to preserve transparency
             - Preserves folder structure
-            
-            **Limits:**
-            - Minimum dimension: 10 pixels
-            - Maximum dimension: 4000 pixels
-            - For batch processing of many images, please be patient
+            - Fixed 400px maximum on largest dimension
             """)
-
 
 def center_on_canvas_tool():
     st.header("Center on Transparent Canvas")
@@ -2809,13 +2834,33 @@ def generate_excel_report(output_folder: Path, marken_index: dict, file_to_facto
 
 
 def get_asset_cell(file_path, filename, col_count):
-    """Create optimized asset cell for PDF with better image handling"""
+    """Create optimized asset cell for PDF with proper transparency handling"""
     ext = Path(file_path).suffix.lower()
     styles = getSampleStyleSheet()
     
     try:
         if ext in ALLOWED_IMAGE_EXTENSIONS:
             with PILImage.open(file_path) as img:
+                # Handle transparency properly
+                if img.mode in ('RGBA', 'LA') or (img.mode == 'P' and 'transparency' in img.info):
+                    # Create a white background for transparent images
+                    background = PILImage.new('RGB', img.size, (255, 255, 255))
+                    if img.mode == 'RGBA':
+                        # Use alpha channel as mask
+                        background.paste(img, mask=img.split()[-1])
+                    elif img.mode == 'LA':
+                        # Luminance + Alpha
+                        img_rgba = img.convert('RGBA')
+                        background.paste(img_rgba, mask=img_rgba.split()[-1])
+                    elif img.mode == 'P' and 'transparency' in img.info:
+                        # Palette mode with transparency
+                        img_rgba = img.convert('RGBA')
+                        background.paste(img_rgba, mask=img_rgba.split()[-1])
+                    img = background
+                else:
+                    # No transparency, safe to convert to RGB
+                    img = img.convert('RGB')
+                
                 orig_width, orig_height = img.size
                 available_width = A4[0] - 40
                 max_width = available_width / col_count
@@ -2830,8 +2875,10 @@ def get_asset_cell(file_path, filename, col_count):
                     width = height * aspect_ratio
 
                 buffer = io.BytesIO()
-                img.convert("RGB").save(buffer, format='PNG')
+                # Save as PNG to preserve quality
+                img.save(buffer, format='PNG')
                 buffer.seek(0)
+                
                 rl_img = RLImage(buffer, width=width, height=height)
 
                 frame = KeepInFrame(max_width, max_height + 30, content=[
@@ -2844,6 +2891,7 @@ def get_asset_cell(file_path, filename, col_count):
             return Paragraph(f"{filename}", styles['Normal'])
     except Exception as e:
         return Paragraph(f"[Image Error]<br/>{filename}", styles['Normal'])
+    
 
 def analyze_files_by_filename(input_folder):
     """Analyze files by extracting brand names from filenames"""
@@ -3480,33 +3528,31 @@ def add_brand_pages_with_png_extensions(elements, marken_spalten, renamed_files_
 def main():
     st.title("🔧 Brand Assets Tools")
 
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
         "Extract Images from Excel", 
         "Name assets by brand",
+        "Canvas white to Transparent",
         "Asset Overview", 
         "Name stims by block + create output files​",
-        "Find Smallest Dimensions",
         "Resize",
-        "Place on Canvas",
-        "Canvas white to Transparent",
+        "Place on Canvas"
+
     ])
 
     with tab1:
          excel_extractor_tool()
     with tab2:
-         file_renamer_tool() 
+         file_renamer_tool()  
     with tab3:
-         pdf_generator_tool() 
+        white_to_transparent_tool()  
     with tab4:
-         brand_renamer_tool() 
+         pdf_generator_tool() 
     with tab5:
-        find_smallest_dimensions_tool()
+         brand_renamer_tool() 
     with tab6:
         resize_with_transparent_canvas_tool()
     with tab7:
         center_on_canvas_tool()
-    with tab8:
-        white_to_transparent_tool()
 
 if __name__ == "__main__":
     main()
