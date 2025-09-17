@@ -3085,7 +3085,13 @@ def process_files(input_folder, marken_index, output_root):
 
             if file.suffix.lower() in ALLOWED_IMAGE_EXTENSIONS:
                 with PILImage.open(file) as img:
-                    img.convert("RGB").save(ziel, format='PNG')
+                    # Preserve transparency instead of converting to RGB
+                    if img.mode in ('RGBA', 'LA') or (img.mode == 'P' and 'transparency' in img.info):
+                        # If image already has transparency, preserve it
+                        img.save(ziel, format='PNG')
+                    else:
+                        # For images without transparency, convert to RGBA to allow transparency
+                        img.convert("RGBA").save(ziel, format='PNG')
             else:
                 shutil.copy2(file, ziel)
 
@@ -3093,7 +3099,6 @@ def process_files(input_folder, marken_index, output_root):
             file_to_factorgroup[neuer_name] = subfolder.name
 
     return renamed_files_by_folder_and_marke, file_to_factorgroup
-
 def brand_renamer_tool():
     st.header("Advanced Brand File Processor")
     st.markdown("Automatically rename and organize brand assets with numbering and generate reports.")
