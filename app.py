@@ -2088,13 +2088,13 @@ def file_renamer_tool():
                 # Show preview
                 with st.expander("📋 Preview renamed files"):
                     preview_df = pd.DataFrame(
-                        processed_files[:20],  # Show first 20 files
+                        processed_files,  
                         columns=["Original Name", "New Name", "Brand"]
                     )
                     st.dataframe(preview_df)
                     
                     if total_files > 20:
-                        st.info(f"Showing first 20 files. Total processed: {total_files}")
+                        st.info(f"Total processed: {total_files}")
                 
                 # Create zip file with renamed files
                 zip_buffer = io.BytesIO()
@@ -2263,7 +2263,7 @@ def white_to_transparent_tool():
                     for i, file_path in enumerate(processed_files[:6]):  # Show max 6 images
                         with cols[i % 3]:
                             img = PILImage.open(file_path)
-                            st.image(img, caption=os.path.basename(file_path), use_container_width=True)
+                            st.image(img, caption=os.path.basename(file_path), use_column_width=True)
                     
                     if len(processed_files) > 6:
                         st.info(f"Showing first 6 images. Total processed: {len(processed_files)}")
@@ -2355,12 +2355,12 @@ def find_smallest_dimensions_tool():
                     with col1:
                         st.subheader("Smallest Width")
                         st.write(f"Dimensions: {min_width} × {height_at_min_width} px")
-                        st.image(file_min_width, caption=os.path.basename(file_min_width), use_container_width =True)
+                        st.image(file_min_width, caption=os.path.basename(file_min_width), use_column_width =True)
                     
                     with col2:
                         st.subheader("Smallest Height")
                         st.write(f"Dimensions: {width_at_min_height} × {min_height} px")
-                        st.image(file_min_height, caption=os.path.basename(file_min_height), use_container_width =True)
+                        st.image(file_min_height, caption=os.path.basename(file_min_height), use_column_width =True)
                 else:
                     st.warning("No valid image files found in the uploaded zip.")
         
@@ -2548,7 +2548,7 @@ def resize_with_transparent_canvas_tool():
                             for i, file_path in enumerate(sample_files):
                                 with cols[i % 3]:
                                     img = PILImage.open(file_path)
-                                    st.image(img, caption=os.path.basename(file_path), use_container_width=True)
+                                    st.image(img, caption=os.path.basename(file_path), use_column_width=True)
                         
                         if processed_count > 6:
                             st.info(f"Showing sample images. Total processed: {processed_count}")
@@ -2701,7 +2701,7 @@ def center_on_canvas_tool():
                         for i, file_path in enumerate(sample_files):
                             with cols[i % 3]:
                                 img = PILImage.open(file_path)
-                                st.image(img, caption=os.path.basename(file_path), use_container_width=True)
+                                st.image(img, caption=os.path.basename(file_path), use_column_width=True)
                         
                         if processed_count > 6:
                             st.info(f"Showing sample images. Total processed: {processed_count}")
@@ -2781,7 +2781,7 @@ def generate_excel_report(output_folder: Path, marken_index: dict, file_to_facto
 
     reordered_data = []
     for _, row in df_assets.iterrows():
-        raw_fg = str(row["factorgroup"])
+        raw_fg = str(row["ID"])
         group_prefix = raw_fg[:2]
         try:
             group = str(int(group_prefix))
@@ -2800,7 +2800,7 @@ def generate_excel_report(output_folder: Path, marken_index: dict, file_to_facto
         })
 
     df_reordered = pd.DataFrame(reordered_data, columns=["Group", "factor", "factorgroup", "ID"])
-
+    df_reordered = df_reordered.sort_values(by='Group', ascending=True).reset_index(drop=True)
     with pd.ExcelWriter(final_excel_path, engine='openpyxl') as writer:
         df_assets.to_excel(writer, index=False, sheet_name="Assets")
         df_reordered.to_excel(writer, index=False, sheet_name="Reordered")
@@ -3088,7 +3088,6 @@ def brand_renamer_tool():
     uploaded_file = st.file_uploader(
         "Choose a ZIP file",
         type=['zip'],
-       # help="Upload a zip file containing your brand folders with assets."
     )
    
     # Reset processing state when new file is uploaded
@@ -3145,11 +3144,21 @@ def brand_renamer_tool():
                             output_folder
                         )
                        
-                        # Generate PDF with corrected ID labels
-                        pdf_buffer, error = generate_filename_based_pdf_report(
+                        # Also rename actual files in output folder to have .png extensions
+                        for file_path in output_folder.iterdir():
+                            if file_path.is_file() and not file_path.suffix:
+                                # File has no extension, add .png
+                                new_file_path = file_path.with_suffix('.png')
+                                try:
+                                    file_path.rename(new_file_path)
+                                except Exception as e:
+                                    print(f"Could not rename {file_path}: {e}")
+                       
+                        # Generate PDF with extensions - use the modified function
+                        pdf_buffer, error = generate_filename_based_pdf_report_with_extensions(
                             input_folder,
                             erste_marke,
-                            renamed_files  # Pass the renamed files mapping
+                            marken_index  # Pass marken_index for ID generation
                         )
                         if error:
                             st.error(f"PDF generation failed: {error}")
@@ -3187,7 +3196,7 @@ def brand_renamer_tool():
                             'zip_buffer': zip_buffer,
                             'combined_zip_buffer': combined_zip_buffer,
                             'temp_dir': temp_dir,
-                            'renamed_files': renamed_files  # Store for potential reuse
+                            'renamed_files': renamed_files
                         }
                         st.session_state.processing_complete = True
                        
@@ -3198,12 +3207,33 @@ def brand_renamer_tool():
         if st.session_state.processing_complete:
             st.success("Processing complete!")
            
-            # Display a preview of processed names
+            # Display a preview of processed names with extensions
             with st.expander("Preview Processed Names"):
                 if 'renamed_files' in st.session_state.processed_data:
-                    st.write("First 10 processed filenames:")
-                    for i, (old_name, new_name) in enumerate(list(st.session_state.processed_data['renamed_files'].items())[:10]):
-                        st.write(f"{old_name} → {new_name}")
+                    st.write("Sample processed filenames (with .png extensions in PDF):")
+                    # Handle the case where renamed_files might be a defaultdict
+                    renamed_files_data = st.session_state.processed_data['renamed_files']
+                    
+                    # Extract sample file names safely
+                    sample_files = []
+                    if hasattr(renamed_files_data, 'items'):
+                        # It's a dictionary-like object
+                        for folder_name, brand_data in list(renamed_files_data.items())[:3]:  # First 3 folders
+                            for brand_name, files in list(brand_data.items())[:2]:  # First 2 brands per folder
+                                for file_path, new_name in files[:2]:  # First 2 files per brand
+                                    if isinstance(new_name, str):
+                                        pdf_name = Path(new_name).stem + '.png'
+                                        sample_files.append((Path(file_path).name, pdf_name))
+                                    if len(sample_files) >= 10:
+                                        break
+                                if len(sample_files) >= 10:
+                                    break
+                            if len(sample_files) >= 10:
+                                break
+                    
+                    # Display the sample files
+                    for old_name, pdf_name in sample_files:
+                        st.write(f"{old_name} → {pdf_name}")
            
             # Option to start over
             if st.button("🔄 Process New File", help="Clear results and upload a new file"):
@@ -3285,7 +3315,167 @@ def brand_renamer_tool():
        
         with st.expander("📖 Instructions"):
             st.markdown("""
+            Upload a ZIP file containing brand asset folders. The tool will:
+            1. Detect all brands automatically
+            2. Let you choose which brand gets number 01
+            3. Process and rename all files with proper numbering
+            4. Generate a PDF report showing all assets with filenames including .png extensions
+            5. Create an Excel overview of the processed files
+            6. Package everything for easy download
             """)
+
+
+def generate_filename_based_pdf_report_with_extensions(input_folder, erste_marke=None, marken_index=None):
+    """Generate PDF report with .png extensions in image labels"""
+    marken_set, renamed_files_by_folder_and_marke, all_files = analyze_files_by_filename(input_folder)
+    
+    if not marken_set:
+        return None, "No brands found in filenames."
+
+    # Use provided marken_index or create new one
+    if not marken_index:
+        marken_index = {}
+        if erste_marke and erste_marke in marken_set:
+            marken_index[erste_marke] = "01"
+            aktuelle_nummer = 2
+            for marke in sorted(marken_set):
+                if marke != erste_marke:
+                    marken_index[marke] = f"{aktuelle_nummer:02d}"
+                    aktuelle_nummer += 1
+        else:
+            for i, marke in enumerate(sorted(marken_set), 1):
+                marken_index[marke] = f"{i:02d}"
+
+    # Generate PDF
+    pdf_buffer = io.BytesIO()
+    doc = SimpleDocTemplate(pdf_buffer, pagesize=A4, leftMargin=20, rightMargin=20, topMargin=40, bottomMargin=30)
+    elements = []
+    styles = getSampleStyleSheet()
+
+    nummer_zu_marke = {v: k for k, v in marken_index.items()}
+    marken_spalten = sorted(nummer_zu_marke.items())
+
+    for folder in sorted(renamed_files_by_folder_and_marke):
+        elements.append(Paragraph(f"<b>Folder: {folder}</b>", styles['Heading2']))
+
+        abschnitt = renamed_files_by_folder_and_marke[folder]
+        total = 0
+        lines = []
+        for nummer, marke in marken_spalten:
+            count = len(abschnitt.get(marke, []))
+            total += count
+            lines.append(f"{nummer} ({marke}): {count}")
+        lines.append(f"Total: {total}")
+        elements.append(Paragraph("<br/>".join(lines), styles['Normal']))
+        elements.append(Spacer(1, 10))
+
+        headers = [f"{nummer} ({marke})" for nummer, marke in marken_spalten]
+        data = [headers]
+        col_data = []
+        max_rows = 0
+        for _, marke in marken_spalten:
+            eintraege = abschnitt.get(marke, [])
+            zellen = []
+            for p, original_name in eintraege:
+                # Generate the ID name and add .png extension for display
+                blocknummer = re.sub(r'\D', '', folder)[:2].zfill(2)
+                markennummer = marken_index[marke]
+                cleaned = get_cleaned_filename_without_brand(original_name, marke)
+                id_name = f"{markennummer}B{blocknummer}{marke}{cleaned}.png"  # Add .png here
+                
+                cell = get_asset_cell(p, id_name, len(headers))
+                zellen.append(cell)
+            col_data.append(zellen)
+            max_rows = max(max_rows, len(zellen))
+
+        for i in range(max_rows):
+            row = []
+            for col in col_data:
+                row.append(col[i] if i < len(col) else "")
+            data.append(row)
+
+        col_width = (A4[0] - 40) / len(headers)
+        t = Table(data, colWidths=[col_width] * len(headers))
+        t.setStyle(TableStyle([
+            ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+            ('BACKGROUND', (0, 0), (-1, 0), colors.lightgrey),
+            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+        ]))
+        elements.append(t)
+        elements.append(PageBreak())
+
+    # Total overview
+    elements.append(Paragraph("<b>Total Overview</b>", styles['Heading2']))
+    global_counts = defaultdict(int)
+    for folder_data in renamed_files_by_folder_and_marke.values():
+        for marke, daten in folder_data.items():
+            global_counts[marke] += len(daten)
+    
+    gesamt = 0
+    summary = []
+    for nummer, marke in marken_spalten:
+        count = global_counts[marke]
+        summary.append(f"{marke}: {count} assets")
+        gesamt += count
+    summary.append(f"Total number of all assets: {gesamt}")
+    elements.append(Paragraph("<br/>".join(summary), styles['Normal']))
+
+    # Add brand pages with .png extensions
+    add_brand_pages_with_png_extensions(elements, marken_spalten, renamed_files_by_folder_and_marke, marken_index)
+
+    try:
+        doc.build(elements)
+        pdf_buffer.seek(0)
+        return pdf_buffer, None
+    except Exception as e:
+        return None, f"Error generating PDF: {str(e)}"
+
+def add_brand_pages_with_png_extensions(elements, marken_spalten, renamed_files_by_folder_and_marke, marken_index):
+    """Add brand overview pages with .png extensions in labels"""
+    styles = getSampleStyleSheet()
+    for nummer, marke in marken_spalten:
+        assets = []
+        for folder in renamed_files_by_folder_and_marke:
+            folder_assets = renamed_files_by_folder_and_marke[folder].get(marke, [])
+            for pfad, original_name in folder_assets:
+                # Generate the ID name with .png extension for display
+                blocknummer = re.sub(r'\D', '', folder)[:2].zfill(2)
+                markennummer = marken_index[marke]
+                cleaned = get_cleaned_filename_without_brand(original_name, marke)
+                id_name = f"{markennummer}B{blocknummer}{marke}{cleaned}.png"  # Add .png here
+                assets.append((pfad, id_name))
+
+        if not assets:
+            continue
+
+        elements.append(PageBreak())
+        elements.append(Paragraph(f"<b>Brand Overview: {nummer} – {marke}</b>", styles['Heading2']))
+        elements.append(Spacer(1, 6))
+        elements.append(Paragraph(f"Number of assets: {len(assets)}", styles['Normal']))
+        elements.append(Spacer(1, 10))
+
+        headers = ["Asset"] * 4
+        data = [headers]
+        row = []
+        for i, (pfad, id_name) in enumerate(assets):
+            # Use ID name with .png extension as the label
+            cell = get_asset_cell(pfad, id_name, 4)
+            row.append(cell)
+            if len(row) == 4:
+                data.append(row)
+                row = []
+        if row:
+            row.extend([""] * (4 - len(row)))
+            data.append(row)
+
+        table = Table(data, colWidths=(A4[0] - 40) / 4)
+        table.setStyle(TableStyle([
+            ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+            ('BACKGROUND', (0, 0), (-1, 0), colors.lightgrey),
+            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+        ]))
+        elements.append(table)
+
 
 def main():
     st.title("🔧 Brand Assets Tools")
