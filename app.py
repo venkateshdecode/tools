@@ -546,7 +546,7 @@ def generate_two_section_pdf_report(input_folder, erste_marke=None):
                 markennummer = marken_index[marke]
                 cleaned = get_cleaned_filename_without_brand(original_name, marke)
                 # Keep the original file extension
-                file_extension = Path(original_name).suffix
+                file_extension = Path(original_name).suffix.lower()
                 id_name = f"{markennummer}B{blocknummer}{marke}{cleaned}{file_extension}"
                 
                 # Pass the full filename with extension to get_asset_cell
@@ -591,7 +591,7 @@ def generate_two_section_pdf_report(input_folder, erste_marke=None):
     summary.append(f"Total number of all assets: {gesamt}")
     elements.append(Paragraph("<br/>".join(summary), styles['Normal']))
     elements.append(PageBreak())
-
+    first_brand = True
     # Individual brand pages
     for nummer, marke in marken_spalten:
         assets = []
@@ -605,7 +605,7 @@ def generate_two_section_pdf_report(input_folder, erste_marke=None):
                 count_str = f"{brand_counter:02d}"
                 cleaned = get_cleaned_filename_without_brand(original_name, marke)
                 # Keep the original file extension
-                file_extension = Path(original_name).suffix
+                file_extension = Path(original_name).suffix.lower()
                 id_name = f"{markennummer}B{blocknummer}{marke}{count_str}{cleaned}{file_extension}"
                 assets.append((pfad, id_name))
                 brand_counter += 1
@@ -613,12 +613,19 @@ def generate_two_section_pdf_report(input_folder, erste_marke=None):
         if not assets:
             continue
 
-        #elements.append(PageBreak())
+
+
+        # Inside the loop for each brand
+        if not first_brand:
+            elements.append(PageBreak())
+        else:
+            first_brand = False
         elements.append(Paragraph(f"<b>Brand Overview: {nummer} – {marke}</b>", styles['Heading2']))
         elements.append(Spacer(1, 6))
         elements.append(Paragraph(f"Assets per Brand: {', '.join([f'{k}: {len([a for a in assets if extract_brand(Path(a[1]).stem) == k])}' for k in [marke]])}", styles['Normal']))
         elements.append(Paragraph(f"Total assets: {len(assets)}", styles['Normal']))
         elements.append(Spacer(1, 10))
+        
 
         headers = ["Asset"] * 4
         data = [headers]
@@ -3393,7 +3400,8 @@ def generate_filename_based_pdf_report_with_extensions(input_folder, erste_marke
                 blocknummer = re.sub(r'\D', '', folder)[:2].zfill(2)
                 markennummer = marken_index[marke]
                 cleaned = get_cleaned_filename_without_brand(original_name, marke)
-                id_name = f"{markennummer}B{blocknummer}{marke}{cleaned}.png"  # Add .png here
+                original_ext = Path(original_name).suffix.lower()  # Get actual extension
+                id_name = f"{markennummer}B{blocknummer}{marke}{cleaned}{original_ext}"  # Add .png here
                 
                 cell = get_asset_cell(p, id_name, len(headers))
                 zellen.append(cell)
@@ -3454,7 +3462,8 @@ def add_brand_pages_with_png_extensions(elements, marken_spalten, renamed_files_
                 blocknummer = re.sub(r'\D', '', folder)[:2].zfill(2)
                 markennummer = marken_index[marke]
                 cleaned = get_cleaned_filename_without_brand(original_name, marke)
-                id_name = f"{markennummer}B{blocknummer}{marke}{cleaned}.png"  # Add .png here
+                original_ext = Path(original_name).suffix.lower()  # Get actual extension
+                id_name = f"{markennummer}B{blocknummer}{marke}{cleaned}{original_ext}"  # Add .png here
                 assets.append((pfad, id_name))
 
         if not assets:
