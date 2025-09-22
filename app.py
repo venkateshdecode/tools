@@ -3099,6 +3099,7 @@ def process_files(input_folder, marken_index, output_root):
             file_to_factorgroup[neuer_name] = subfolder.name
 
     return renamed_files_by_folder_and_marke, file_to_factorgroup
+
 def brand_renamer_tool():
     st.header("Advanced Brand File Processor")
     st.markdown("Automatically rename and organize brand assets with numbering and generate reports.")
