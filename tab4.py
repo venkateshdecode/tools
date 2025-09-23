@@ -6,6 +6,12 @@ from reportlab.lib.styles import getSampleStyleSheet
 
 from helper import extract_zip_to_temp, erkenne_marken_aus_ordnern, generate_pdf_report, get_files_by_marke, analyze_files_by_filename, generate_two_section_pdf_report
 
+ALLOWED_IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.bmp', '.gif', '.tiff', '.webp'}
+ALLOWED_TEXT_EXTENSIONS = {'.txt', '.md', '.csv'}
+ALLOWED_VIDEO_EXTENSIONS = {'.mp4', '.avi', '.mov', '.wmv', '.flv', '.mkv', '.webm', '.m4v', '.3gp', '.ogv'}
+ALLOWED_AUDIO_EXTENSIONS = {'.mp3', '.wav', '.aac', '.flac', '.ogg', '.m4a', '.wma'}
+ALL_ALLOWED_EXTENSIONS = ALLOWED_IMAGE_EXTENSIONS.union(ALLOWED_TEXT_EXTENSIONS).union(ALLOWED_VIDEO_EXTENSIONS).union(ALLOWED_AUDIO_EXTENSIONS)
+
 def pdf_generator_tool():
     st.header("Asset Overview​")
     st.markdown("Upload a zip file containing brand assets to generate asset overview by brand​")
@@ -149,4 +155,6 @@ def pdf_generator_tool():
             **Supported file types:**
             - **Images:** JPG, JPEG, PNG, BMP, GIF, TIFF, WEBP
             - **Text files:** TXT, MD, CSV
+            - **VIDEO files:**.mp4', '.avi', '.mov', '.wmv', '.flv', '.mkv', '.webm', '.m4v', '.3gp', '.ogv'
+            - **AUDIO files:**.mp3', '.wav', '.aac', '.flac', '.ogg', '.m4a', '.wma'
             """)
