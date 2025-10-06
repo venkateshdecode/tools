@@ -1,6 +1,7 @@
 import io
 import os
 import zipfile
+import shutil
 import streamlit as st
 from PIL import Image as PILImage
 
@@ -53,9 +54,8 @@ def resize_with_transparent_canvas_tool():
                 all_files = []
                 for root, dirs, files in os.walk(input_folder):
                     for file in files:
-                        ext = os.path.splitext(file)[1].lower()
-                        if ext in ALLOWED_IMAGE_EXTENSIONS:
-                            all_files.append(os.path.join(root, file))
+                        # Accept ALL file extensions, not just images
+                        all_files.append(os.path.join(root, file))
                 
                 total_files = len(all_files)
                 
@@ -65,37 +65,47 @@ def resize_with_transparent_canvas_tool():
                     
                     try:
                         relative_path = os.path.relpath(file_path, input_folder)
-                        new_path = os.path.join(output_folder, os.path.splitext(relative_path)[0] + ".png")
-                        os.makedirs(os.path.dirname(new_path), exist_ok=True)
+                        ext = os.path.splitext(file_path)[1].lower()
                         
-                        with PILImage.open(file_path) as img:
-                            img = img.convert("RGBA")
-                            orig_w, orig_h = img.size
+                        # Only process if it's an image, otherwise copy as-is
+                        if ext in ALLOWED_IMAGE_EXTENSIONS:
+                            new_path = os.path.join(output_folder, os.path.splitext(relative_path)[0] + ".png")
+                            os.makedirs(os.path.dirname(new_path), exist_ok=True)
                             
-                            # Calculate scaling factor based on largest side
-                            max_dimension = 400
-                            if orig_w >= orig_h:
-                                # Width is larger or equal
-                                scale_factor = max_dimension / orig_w
-                                new_w = max_dimension
-                                new_h = int(orig_h * scale_factor)
-                            else:
-                                # Height is larger
-                                scale_factor = max_dimension / orig_h
-                                new_h = max_dimension
-                                new_w = int(orig_w * scale_factor)
-                            
-                            # Resize image while maintaining aspect ratio
-                            img_resized = img.resize((new_w, new_h), PILImage.LANCZOS)
-                            
-                            # Create transparent canvas with the exact resized dimensions
-                            canvas = PILImage.new("RGBA", (new_w, new_h), (0, 0, 0, 0))
-                            
-                            # The resized image fits perfectly on the canvas (no centering needed)
-                            canvas.paste(img_resized, (0, 0), mask=img_resized)
-                            
-                            canvas.save(new_path)
-                            processed_count += 1
+                            with PILImage.open(file_path) as img:
+                                img = img.convert("RGBA")
+                                orig_w, orig_h = img.size
+                                
+                                # Calculate scaling factor based on largest side
+                                max_dimension = 400
+                                if orig_w >= orig_h:
+                                    # Width is larger or equal
+                                    scale_factor = max_dimension / orig_w
+                                    new_w = max_dimension
+                                    new_h = int(orig_h * scale_factor)
+                                else:
+                                    # Height is larger
+                                    scale_factor = max_dimension / orig_h
+                                    new_h = max_dimension
+                                    new_w = int(orig_w * scale_factor)
+                                
+                                # Resize image while maintaining aspect ratio
+                                img_resized = img.resize((new_w, new_h), PILImage.LANCZOS)
+                                
+                                # Create transparent canvas with the exact resized dimensions
+                                canvas = PILImage.new("RGBA", (new_w, new_h), (0, 0, 0, 0))
+                                
+                                # The resized image fits perfectly on the canvas (no centering needed)
+                                canvas.paste(img_resized, (0, 0), mask=img_resized)
+                                
+                                canvas.save(new_path)
+                        else:
+                            # Not an image - copy as-is with original extension
+                            new_path = os.path.join(output_folder, relative_path)
+                            os.makedirs(os.path.dirname(new_path), exist_ok=True)
+                            shutil.copy2(file_path, new_path)
+                        
+                        processed_count += 1
                     except Exception as e:
                         error_count += 1
                         st.warning(f"Error processing {os.path.basename(file_path)}: {str(e)}")
