@@ -79,17 +79,33 @@ def brand_renamer_tool():
                             output_folder
                         )
                        
-                        # Also rename actual files in output folder to have .png extensions
+                        # Rename files to preserve original extensions instead of forcing .png
                         for file_path in output_folder.iterdir():
-                            if file_path.is_file() and not file_path.suffix:
-                                # File has no extension, add .png
-                                new_file_path = file_path.with_suffix('.png')
-                                try:
-                                    file_path.rename(new_file_path)
-                                except Exception as e:
-                                    print(f"Could not rename {file_path}: {e}")
+                            if file_path.is_file():
+                                # Get original extension (if it exists)
+                                original_ext = file_path.suffix.lower()
+                                
+                                # If file has no extension, try to detect from content or keep as is
+                                if not original_ext:
+                                    # Try to find original extension from renamed_files mapping
+                                    original_name = None
+                                    for folder_data in renamed_files.values():
+                                        for brand_data in folder_data.values():
+                                            for orig_path, new_name in brand_data:
+                                                if Path(new_name).name == file_path.name:
+                                                    original_name = Path(orig_path).name
+                                                    break
+                                    
+                                    if original_name:
+                                        orig_ext = Path(original_name).suffix.lower()
+                                        if orig_ext:
+                                            new_file_path = file_path.with_suffix(orig_ext)
+                                            try:
+                                                file_path.rename(new_file_path)
+                                            except Exception as e:
+                                                print(f"Could not rename {file_path}: {e}")
                        
-                        # Generate PDF with extensions - use the modified function
+                        # Generate PDF with extensions - supports all file types
                         pdf_buffer, error = generate_filename_based_pdf_report_with_extensions(
                             input_folder,
                             erste_marke,
@@ -104,7 +120,8 @@ def brand_renamer_tool():
                         zip_buffer = io.BytesIO()
                         with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
                             for file in output_folder.iterdir():
-                                zip_file.write(file, file.name)
+                                if file.is_file():
+                                    zip_file.write(file, file.name)
                         zip_buffer.seek(0)
                        
                         # Create combined download with all files
@@ -112,7 +129,8 @@ def brand_renamer_tool():
                         with zipfile.ZipFile(combined_zip_buffer, 'w', zipfile.ZIP_DEFLATED) as combined_zip:
                             # Add processed files
                             for file in output_folder.iterdir():
-                                combined_zip.write(file, f"processed_files/{file.name}")
+                                if file.is_file():
+                                    combined_zip.write(file, f"processed_files/{file.name}")
                            
                             # Add PDF report if available
                             if pdf_buffer:
@@ -142,10 +160,10 @@ def brand_renamer_tool():
         if st.session_state.processing_complete:
             st.success("Processing complete!")
            
-            # Display a preview of processed names with extensions
+            # Display a preview of processed names with original extensions
             with st.expander("Preview Processed Names"):
                 if 'renamed_files' in st.session_state.processed_data:
-                    st.write("Sample processed filenames (with .png extensions in PDF):")
+                    st.write("Sample processed filenames (with original extensions preserved):")
                     # Handle the case where renamed_files might be a defaultdict
                     renamed_files_data = st.session_state.processed_data['renamed_files']
                     
@@ -157,7 +175,9 @@ def brand_renamer_tool():
                             for brand_name, files in list(brand_data.items())[:2]:  # First 2 brands per folder
                                 for file_path, new_name in files[:2]:  # First 2 files per brand
                                     if isinstance(new_name, str):
-                                        pdf_name = Path(new_name).stem + '.png'
+                                        # Preserve original extension
+                                        original_ext = Path(file_path).suffix
+                                        pdf_name = Path(new_name).stem + original_ext
                                         sample_files.append((Path(file_path).name, pdf_name))
                                     if len(sample_files) >= 10:
                                         break
@@ -253,8 +273,15 @@ def brand_renamer_tool():
             Upload a ZIP file containing brand asset folders. The tool will:
             1. Detect all brands automatically
             2. Let you choose which brand gets number 01
-            3. Process and rename all files with proper numbering
-            4. Generate a PDF report showing all assets with filenames including .png extensions
-            5. Create an Excel overview of the processed files
+            3. Process and rename all files with proper numbering (preserving all file extensions)
+            4. Generate a PDF report showing all assets with original filenames and extensions
+            5. Create an Excel overview of the processed files (all file types)
             6. Package everything for easy download
+            
+            **Supported file types:** All extensions are supported including:
+            - Images: .png, .jpg, .jpeg, .gif, .bmp, .svg, .webp
+            - Videos: .mp4, .avi, .mov, .mkv, .webm
+            - Audio: .mp3, .wav, .ogg, .flac, .m4a
+            - Documents: .pdf, .doc, .docx, .txt, .xlsx
+            - And any other file type!
             """)
