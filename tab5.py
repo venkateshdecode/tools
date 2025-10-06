@@ -11,7 +11,7 @@ from helper import extract_zip_to_temp, analyze_files_by_filename, generate_file
 
 
 def brand_renamer_tool():
-    st.header("Advanced Brand File Processor")
+    st.header("Advanced Brand Processor")
     st.markdown("Automatically rename and organize brand assets with numbering and generate reports.")
    
     # Initialize session state for persistent results
