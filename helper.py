@@ -18,12 +18,21 @@ from reportlab.platypus import (
 )
 import openpyxl
 
-# Defined file types
-ALLOWED_IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.bmp', '.gif', '.tiff', '.webp'}
-ALLOWED_TEXT_EXTENSIONS = {'.txt', '.md', '.csv'}
-ALLOWED_VIDEO_EXTENSIONS = {'.mp4', '.avi', '.mov', '.wmv', '.flv', '.mkv', '.webm', '.m4v', '.3gp', '.ogv'}
-ALLOWED_AUDIO_EXTENSIONS = {'.mp3', '.wav', '.aac', '.flac', '.ogg', '.m4a', '.wma'}
-ALL_ALLOWED_EXTENSIONS = ALLOWED_IMAGE_EXTENSIONS.union(ALLOWED_TEXT_EXTENSIONS).union(ALLOWED_VIDEO_EXTENSIONS).union(ALLOWED_AUDIO_EXTENSIONS)
+
+ALLOWED_IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.bmp', '.gif', '.tiff', '.tif', '.webp', '.svg', '.ico', '.heic', '.heif', '.raw'}
+ALLOWED_TEXT_EXTENSIONS = {'.txt', '.md', '.csv', '.doc', '.docx', '.pdf', '.rtf', '.odt', '.tex'}
+ALLOWED_VIDEO_EXTENSIONS = {'.mp4', '.avi', '.mov', '.wmv', '.flv', '.mkv', '.webm', '.m4v', '.3gp', '.ogv', '.mpg', '.mpeg', '.vob', '.mts', '.m2ts'}
+ALLOWED_AUDIO_EXTENSIONS = {'.mp3', '.wav', '.aac', '.flac', '.ogg', '.m4a', '.wma', '.opus', '.aiff', '.ape', '.alac'}
+ALLOWED_ARCHIVE_EXTENSIONS = {'.zip', '.rar', '.7z', '.tar', '.gz', '.bz2', '.xz'}
+ALLOWED_CODE_EXTENSIONS = {'.py', '.js', '.html', '.css', '.java', '.cpp', '.c', '.h', '.php', '.rb', '.go', '.rs', '.swift', '.kt'}
+ALLOWED_DATA_EXTENSIONS = {'.json', '.xml', '.yaml', '.yml', '.sql', '.db', '.sqlite', '.xlsx', '.xls'}
+ALLOWED_OTHER_EXTENSIONS = {'.psd', '.ai', '.sketch', '.fig', '.eps', '.indd', '.dwg', '.stl', '.obj', '.fbx', '.blend'}
+
+# Combine all extensions - if a file has ANY extension or NO extension, process it
+ALL_ALLOWED_EXTENSIONS = (ALLOWED_IMAGE_EXTENSIONS | ALLOWED_TEXT_EXTENSIONS | 
+                          ALLOWED_VIDEO_EXTENSIONS | ALLOWED_AUDIO_EXTENSIONS |
+                          ALLOWED_ARCHIVE_EXTENSIONS | ALLOWED_CODE_EXTENSIONS |
+                          ALLOWED_DATA_EXTENSIONS | ALLOWED_OTHER_EXTENSIONS)
 
 # Helper functions from both files
 def extract_zip_to_temp(uploaded_file):
@@ -146,14 +155,29 @@ def process_files(input_folder, marken_index, output_root):
 
     return renamed_files_by_folder_and_marke, file_to_factorgroup
 
+def is_valid_file(file_path):
+    """Check if file should be processed - accept ALL files except hidden/system files"""
+    filename = Path(file_path).name
+    # Skip hidden files and system files
+    if filename.startswith('.') or filename.startswith('~') or filename == 'Thumbs.db':
+        return False
+    # Accept all other files
+    return True
+
 def generate_excel_report(output_folder: Path, marken_index: dict, file_to_factorgroup: dict):
+    """Generate Excel report - ACCEPT ALL FILE TYPES"""
     final_excel_path = output_folder / "IcAt_Overview_Final.xlsx"
 
     nummer_zu_marke = {v: k for k, v in marken_index.items()}
     data = []
+    
     for file in sorted(output_folder.iterdir()):
-        if file.is_file() and file.suffix.lower() in {'.png', '.txt', '.csv', '.md'}:
+        # Process ALL files, not just specific extensions
+        if file.is_file() and is_valid_file(file):
             name = file.stem
+            # Get file extension for display
+            file_ext = file.suffix.lower() if file.suffix else ''
+            
             match = re.match(r"(\d{2})B(\d{2})([a-z0-9]+)", name, re.IGNORECASE)
             if match:
                 markennummer, blocknummer, marke = match.groups()
@@ -163,10 +187,13 @@ def generate_excel_report(output_folder: Path, marken_index: dict, file_to_facto
                 factorgroup = file_to_factorgroup.get(file.name, f"{blocknummer}Unknown")
                 factorgroup = factorgroup.replace('_', '')  # Remove all underscores
                 
+                # Include file extension in the ID column
+                id_with_ext = name
+                
                 data.append({
                     "factor": factor,
                     "factorgroup": factorgroup,
-                    "ID": name
+                    "ID": id_with_ext  # Now includes extension
                 })
 
     df_assets = pd.DataFrame(data, columns=["factor", "factorgroup", "ID"])
@@ -193,6 +220,7 @@ def generate_excel_report(output_folder: Path, marken_index: dict, file_to_facto
 
     df_reordered = pd.DataFrame(reordered_data, columns=["Group", "factor", "factorgroup", "ID"])
     df_reordered = df_reordered.sort_values(by='Group', ascending=True).reset_index(drop=True)
+    
     with pd.ExcelWriter(final_excel_path, engine='openpyxl') as writer:
         df_assets.to_excel(writer, index=False, sheet_name="Assets")
         df_reordered.to_excel(writer, index=False, sheet_name="Reordered")
