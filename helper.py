@@ -17,6 +17,8 @@ from reportlab.platypus import (
     Paragraph, Spacer, PageBreak, KeepInFrame
 )
 import openpyxl
+from openpyxl.styles import PatternFill
+
 
 
 ALLOWED_IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.bmp', '.gif', '.tiff', '.tif', '.webp', '.svg', '.ico', '.heic', '.heif', '.raw'}
@@ -165,65 +167,125 @@ def is_valid_file(file_path):
     return True
 
 def generate_excel_report(output_folder: Path, marken_index: dict, file_to_factorgroup: dict):
-    """Generate Excel report - ACCEPT ALL FILE TYPES"""
+    """Generate Excel report with 'language' column, exceptions, and highlighting"""
     final_excel_path = output_folder / "IcAt_Overview_Final.xlsx"
 
     nummer_zu_marke = {v: k for k, v in marken_index.items()}
-    data = []
-    
+    rows = []  # wir führen Flags für Highlighting mit
+
     for file in sorted(output_folder.iterdir()):
         # Process ALL files, not just specific extensions
         if file.is_file() and is_valid_file(file):
-            name = file.stem
-            # Get file extension for display
-            file_ext = file.suffix.lower() if file.suffix else ''
-            
-            match = re.match(r"(\d{2})B(\d{2})([a-z0-9]+)", name, re.IGNORECASE)
-            if match:
-                markennummer, blocknummer, marke = match.groups()
-                factor = nummer_zu_marke.get(markennummer, marke)
-                
-                # Get factorgroup and remove underscores
-                factorgroup = file_to_factorgroup.get(file.name, f"{blocknummer}Unknown")
-                factorgroup = factorgroup.replace('_', '')  # Remove all underscores
-                
-                # Include file extension in the ID column
-                id_with_ext = name
-                
-                data.append({
-                    "factor": factor,
-                    "factorgroup": factorgroup,
-                    "ID": id_with_ext  # Now includes extension
-                })
+            id_base = file.stem                        # ID ohne Extension
+            orig_ext = file.suffix.lower() if file.suffix else ''  # z. B. ".png"
 
-    df_assets = pd.DataFrame(data, columns=["factor", "factorgroup", "ID"])
+            match = re.match(r"(\d{2})B(\d{2})([a-z0-9]+)", id_base, re.IGNORECASE)
+            if not match:
+                continue
 
-    reordered_data = []
-    for _, row in df_assets.iterrows():
-        raw_fg = str(row["ID"])
-        group_prefix = raw_fg[:2]
+            markennummer, blocknummer, marke_chunk = match.groups()
+            factor = nummer_zu_marke.get(markennummer, marke_chunk)
+
+            # factorgroup aus Mapping, Unterstriche entfernen
+            factorgroup = file_to_factorgroup.get(file.name, f"{blocknummer}Unknown")
+            factorgroup = str(factorgroup).replace('_', '')
+
+            # Flags (für Regeln & Highlight – basieren auf Originalendung + ID)
+            id_upper = id_base.upper()
+            has_B20 = ("B20" in id_upper)
+            is_txt = (orig_ext == ".txt")
+            is_av = (orig_ext in ALLOWED_VIDEO_EXTENSIONS or orig_ext in ALLOWED_AUDIO_EXTENSIONS)
+            has_B12_B14_B18 = any(tag in id_upper for tag in ("B12", "B14", "B18"))
+
+            # language gemäß besprochener Logik:
+            # A) B12/B14/B18 + .txt => Inhalt der Textdatei 1:1 in language
+            if has_B12_B14_B18 and is_txt:
+                try:
+                    language_val = file.read_text(encoding="utf-8")
+                except Exception:
+                    language_val = file.read_bytes().decode("utf-8", errors="ignore")
+            # B) B20 + Audio/Video => language = ID + ".png"
+            elif has_B20 and is_av:
+                language_val = f"{id_base}.png"
+            # C) Standard => language = ID (+ Original-Endung, falls vorhanden)
+            else:
+                language_val = f"{id_base}{orig_ext}" if orig_ext else id_base
+
+            rows.append({
+                "factor": factor,
+                "factorgroup": factorgroup,
+                "ID": id_base,            # wie bisher: ohne Extension
+                "language": language_val, # neu
+                "_hl_txt": is_txt,
+                "_hl_av": is_av,
+                "_hl_b20": has_B20,
+            })
+
+    # DataFrame für Assets
+    df_assets = pd.DataFrame(rows)
+    if df_assets.empty:
+        # trotzdem eine leere Datei mit den richtigen Sheets/Spalten schreiben
+        with pd.ExcelWriter(final_excel_path, engine='openpyxl') as writer:
+            pd.DataFrame(columns=["factor","factorgroup","ID","language"]).to_excel(writer, index=False, sheet_name="Assets")
+            pd.DataFrame(columns=["Group","factor","factorgroup","ID","language"]).to_excel(writer, index=False, sheet_name="Reordered")
+        return final_excel_path
+
+    # Sichtbare Spalten
+    df_assets_visible = df_assets[["factor", "factorgroup", "ID", "language"]].copy()
+
+    # Reordered (bestehende Logik beibehalten: factor/factorgroup getauscht)
+    reordered = []
+    for _, r in df_assets.iterrows():
+        raw_id = str(r["ID"])
+        group_prefix = raw_id[:2]
         try:
-            group = str(int(group_prefix))
+            group_val = str(int(group_prefix))  # führende Nullen entfernen
         except ValueError:
-            group = group_prefix
+            group_val = group_prefix
 
-        # Also remove underscores from the reordered data
-        clean_factor = str(row["factorgroup"]).replace('_', '')
-        clean_factorgroup = str(row["factor"]).replace('_', '')
+        clean_factor = str(r["factorgroup"]).replace("_", "")
+        clean_factorgroup = str(r["factor"]).replace("_", "")
 
-        reordered_data.append({
-            "Group": group,
-            "factor": clean_factor,
+        reordered.append({
+            "Group": group_val,
+            "factor": clean_factor,          # wie bisher vertauscht
             "factorgroup": clean_factorgroup,
-            "ID": row["ID"]
+            "ID": raw_id,
+            "language": r["language"],       # mitnehmen
+            "_hl_txt": r["_hl_txt"],
+            "_hl_av": r["_hl_av"],
+            "_hl_b20": r["_hl_b20"],
         })
 
-    df_reordered = pd.DataFrame(reordered_data, columns=["Group", "factor", "factorgroup", "ID"])
-    df_reordered = df_reordered.sort_values(by='Group', ascending=True).reset_index(drop=True)
-    
+    df_reordered = pd.DataFrame(reordered).sort_values(by="Group", ascending=True).reset_index(drop=True)
+    df_reordered_visible = df_reordered[["Group", "factor", "factorgroup", "ID", "language"]].copy()
+
+    # Schreiben + Highlight
     with pd.ExcelWriter(final_excel_path, engine='openpyxl') as writer:
-        df_assets.to_excel(writer, index=False, sheet_name="Assets")
-        df_reordered.to_excel(writer, index=False, sheet_name="Reordered")
+        df_assets_visible.to_excel(writer, index=False, sheet_name="Assets")
+        df_reordered_visible.to_excel(writer, index=False, sheet_name="Reordered")
+
+        wb = writer.book
+        ws_assets = writer.sheets["Assets"]
+        ws_reordered = writer.sheets["Reordered"]
+
+        # dezentes Gelb für Highlights
+        hl_fill = PatternFill(start_color="FFF9C4", end_color="FFF9C4", fill_type="solid")
+
+        # Spaltenindex der 'language'-Spalte (1-basiert; A=1)
+        # Assets: factor | factorgroup | ID | language
+        assets_language_col_idx = 4
+        # Reordered: Group | factor | factorgroup | ID | language
+        reordered_language_col_idx = 5
+
+        # Highlight, wenn: Original .txt ODER Original AV ODER ID enthält B20
+        for i, r in enumerate(df_assets.itertuples(index=False), start=2):
+            if (r._hl_txt or r._hl_av or r._hl_b20):
+                ws_assets.cell(row=i, column=assets_language_col_idx).fill = hl_fill
+
+        for i, r in enumerate(df_reordered.itertuples(index=False), start=2):
+            if (r._hl_txt or r._hl_av or r._hl_b20):
+                ws_reordered.cell(row=i, column=reordered_language_col_idx).fill = hl_fill
 
     return final_excel_path
 
