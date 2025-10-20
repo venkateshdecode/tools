@@ -170,33 +170,59 @@ def generate_excel_report(output_folder: Path, marken_index: dict, file_to_facto
 
     nummer_zu_marke = {v: k for k, v in marken_index.items()}
     data = []
-    
+
     for file in sorted(output_folder.iterdir()):
         # Process ALL files, not just specific extensions
         if file.is_file() and is_valid_file(file):
             name = file.stem
             # Get file extension for display
             file_ext = file.suffix.lower() if file.suffix else ''
-            
+
             match = re.match(r"(\d{2})B(\d{2})([a-z0-9]+)", name, re.IGNORECASE)
             if match:
                 markennummer, blocknummer, marke = match.groups()
                 factor = nummer_zu_marke.get(markennummer, marke)
-                
+
                 # Get factorgroup and remove underscores
                 factorgroup = file_to_factorgroup.get(file.name, f"{blocknummer}Unknown")
                 factorgroup = factorgroup.replace('_', '')  # Remove all underscores
-                
+
                 # Include file extension in the ID column
-                id_with_ext = name
-                
+                only_id = name
+                is_text_file = False
+                is_b20_id = False
+
+                # Check if ID contains "B20" substring
+                if "B20" in only_id.upper():
+                    is_b20_id = True
+                    # Rule 3: If ID contains B20, always use .png
+                    language_value = only_id + ".png"
+                elif file_ext == '.txt':
+                    # Rule 2: Read text file content
+                    is_text_file = True
+                    try:
+                        # Read the content of the .txt file
+                        with open(file, 'r', encoding='utf-8', errors='ignore') as txt_file:
+                            txt_content = txt_file.read().strip()
+                            # Use the content instead of filename
+                            language_value = txt_content if txt_content else "[Empty file]"
+                    except Exception as e:
+                        # If error reading file, show error message
+                        language_value = f"[Error reading file: {str(e)}]"
+                else:
+                    # Rule 1: For normal files, show ID + extension
+                    language_value = name + file_ext
+
                 data.append({
                     "factor": factor,
                     "factorgroup": factorgroup,
-                    "ID": id_with_ext  # Now includes extension
+                    "ID": only_id,
+                    "Language": language_value,
+                    "highlight_yellow": is_text_file or is_b20_id  # Track which cells need highlighting
                 })
 
-    df_assets = pd.DataFrame(data, columns=["factor", "factorgroup", "ID"])
+
+    df_assets = pd.DataFrame(data, columns=["factor", "factorgroup", "ID", "Language"])
 
     reordered_data = []
     for _, row in df_assets.iterrows():
@@ -210,22 +236,56 @@ def generate_excel_report(output_folder: Path, marken_index: dict, file_to_facto
         # Also remove underscores from the reordered data
         clean_factor = str(row["factorgroup"]).replace('_', '')
         clean_factorgroup = str(row["factor"]).replace('_', '')
-
+        
         reordered_data.append({
             "Group": group,
             "factor": clean_factor,
             "factorgroup": clean_factorgroup,
-            "ID": row["ID"]
+            "ID": row["ID"],
+            "Language": row["Language"] 
         })
 
-    df_reordered = pd.DataFrame(reordered_data, columns=["Group", "factor", "factorgroup", "ID"])
+    df_reordered = pd.DataFrame(reordered_data, columns=["Group", "factor", "factorgroup", "ID", "Language"])
     df_reordered = df_reordered.sort_values(by='Group', ascending=True).reset_index(drop=True)
-    
+
     with pd.ExcelWriter(final_excel_path, engine='openpyxl') as writer:
         df_assets.to_excel(writer, index=False, sheet_name="Assets")
         df_reordered.to_excel(writer, index=False, sheet_name="Reordered")
 
+        # Apply yellow highlighting to Language column cells
+        workbook = writer.book
+        from openpyxl.styles import PatternFill
+
+        yellow_fill = PatternFill(start_color='FFFF00', end_color='FFFF00', fill_type='solid')
+
+        # Highlight in Assets sheet
+        assets_sheet = workbook['Assets']
+        language_col_idx = 4  # Language is the 4th column (D)
+        for row_idx in range(2, len(df_assets) + 2):  # Start from row 2 (after header)
+            cell = assets_sheet.cell(row=row_idx, column=language_col_idx)
+            # Check if this row should be highlighted based on the highlight_yellow flag
+            if row_idx - 2 < len(data):
+                if data[row_idx - 2].get("highlight_yellow", False):
+                    cell.fill = yellow_fill
+
+        # Highlight in Reordered sheet
+        reordered_sheet = workbook['Reordered']
+        language_col_idx = 5  # Language is the 5th column (E)
+        id_col_idx = 4  # ID is the 4th column (D)
+
+        # Create a mapping of ID to highlight_yellow flag for quick lookup
+        id_to_highlight = {item["ID"]: item.get("highlight_yellow", False) for item in data}
+
+        for row_idx in range(2, len(df_reordered) + 2):  # Start from row 2 (after header)
+            cell = reordered_sheet.cell(row=row_idx, column=language_col_idx)
+            # Read the ID from this row to check if it should be highlighted
+            id_cell = reordered_sheet.cell(row=row_idx, column=id_col_idx)
+            id_value = id_cell.value
+            if id_value and id_to_highlight.get(id_value, False):
+                cell.fill = yellow_fill
+
     return final_excel_path
+
 
 
 def add_brand_pages_with_png_extensions(elements, marken_spalten, renamed_files_by_folder_and_marke, marken_index):
