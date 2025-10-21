@@ -6,6 +6,7 @@ from tab4 import pdf_generator_tool
 from tab5 import brand_renamer_tool
 from tab6 import resize_with_transparent_canvas_tool
 from tab7 import center_on_canvas_tool
+from tab8 import render as tab8_render
 
 # Configure Streamlit page
 st.set_page_config(
@@ -18,14 +19,15 @@ st.set_page_config(
 def main():
     st.title("🔧 Brand Assets Tools")
 
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
-        "Extract Images from Excel", 
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
+        "Extract Images from Excel",
         "Name assets by brand",
         "Canvas white to Transparent",
-        "Asset Overview", 
+        "Asset Overview",
         "Name stims by block + create output files​",
         "Resize",
-        "Place on Canvas"
+        "Place on Canvas",
+        "Button Demo"
 
     ])
 
@@ -43,6 +45,8 @@ def main():
         resize_with_transparent_canvas_tool()
     with tab7:
         center_on_canvas_tool()
+    with tab8:
+        tab8_render()
 
 if __name__ == "__main__":
     main()
