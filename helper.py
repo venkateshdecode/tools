@@ -111,10 +111,8 @@ def process_files(input_folder, marken_index, output_root):
             continue
         blocknummer = re.sub(r'\D', '', subfolder.name)[:2].zfill(2)
         
-        # Count files per brand in this folder for sequential numbering
         brand_counters = defaultdict(int)
         
-        # First pass: count files per brand to establish proper numbering
         files_to_process = []
         for file in sorted(subfolder.iterdir()):
             if file.suffix.lower() not in ALL_ALLOWED_EXTENSIONS:
@@ -123,10 +121,8 @@ def process_files(input_folder, marken_index, output_root):
             brand_counters[marke] += 1
             files_to_process.append((file, marke))
         
-        # Reset counters for actual processing
         brand_counters = defaultdict(int)
         
-        # Second pass: process files with sequential numbering
         for file, marke in files_to_process:
             brand_counters[marke] += 1  # Increment counter for this brand
             count_str = f"{brand_counters[marke]:02d}"  # Format as 01, 02, 03, etc.
@@ -134,18 +130,14 @@ def process_files(input_folder, marken_index, output_root):
             markennummer = marken_index[marke]
             cleaned = get_cleaned_filename_without_brand(file.name, marke)
             
-            # New format: markennummer + B + blocknummer + marke + count + cleaned + extension
             neuer_name = f"{markennummer}B{blocknummer}{marke}{count_str}{cleaned}{file.suffix.lower()}"
             ziel = output_root / neuer_name
 
             if file.suffix.lower() in ALLOWED_IMAGE_EXTENSIONS:
                 with PILImage.open(file) as img:
-                    # Preserve transparency instead of converting to RGB
                     if img.mode in ('RGBA', 'LA') or (img.mode == 'P' and 'transparency' in img.info):
-                        # If image already has transparency, preserve it
                         img.save(ziel, format='PNG')
                     else:
-                        # For images without transparency, convert to RGBA to allow transparency
                         img.convert("RGBA").save(ziel, format='PNG')
             else:
                 shutil.copy2(file, ziel)
@@ -158,10 +150,8 @@ def process_files(input_folder, marken_index, output_root):
 def is_valid_file(file_path):
     """Check if file should be processed - accept ALL files except hidden/system files"""
     filename = Path(file_path).name
-    # Skip hidden files and system files
     if filename.startswith('.') or filename.startswith('~') or filename == 'Thumbs.db':
         return False
-    # Accept all other files
     return True
 
 def generate_excel_report(output_folder: Path, marken_index: dict, file_to_factorgroup: dict):
@@ -172,10 +162,8 @@ def generate_excel_report(output_folder: Path, marken_index: dict, file_to_facto
     data = []
 
     for file in sorted(output_folder.iterdir()):
-        # Process ALL files, not just specific extensions
         if file.is_file() and is_valid_file(file):
             name = file.stem
-            # Get file extension for display
             file_ext = file.suffix.lower() if file.suffix else ''
 
             match = re.match(r"(\d{2})B(\d{2})([a-z0-9]+)", name, re.IGNORECASE)
@@ -183,34 +171,25 @@ def generate_excel_report(output_folder: Path, marken_index: dict, file_to_facto
                 markennummer, blocknummer, marke = match.groups()
                 factor = nummer_zu_marke.get(markennummer, marke)
 
-                # Get factorgroup and remove underscores
                 factorgroup = file_to_factorgroup.get(file.name, f"{blocknummer}Unknown")
                 factorgroup = factorgroup.replace('_', '')  # Remove all underscores
 
-                # Include file extension in the ID column
                 only_id = name
                 is_text_file = False
                 is_b20_id = False
 
-                # Check if ID contains "B20" substring
                 if "B20" in only_id.upper():
                     is_b20_id = True
-                    # Rule 3: If ID contains B20, always use .png
                     language_value = only_id + ".png"
                 elif file_ext == '.txt':
-                    # Rule 2: Read text file content
                     is_text_file = True
                     try:
-                        # Read the content of the .txt file
                         with open(file, 'r', encoding='utf-8', errors='ignore') as txt_file:
                             txt_content = txt_file.read().strip()
-                            # Use the content instead of filename
                             language_value = txt_content if txt_content else "[Empty file]"
                     except Exception as e:
-                        # If error reading file, show error message
                         language_value = f"[Error reading file: {str(e)}]"
                 else:
-                    # Rule 1: For normal files, show ID + extension
                     language_value = name + file_ext
 
                 data.append({
@@ -218,7 +197,7 @@ def generate_excel_report(output_folder: Path, marken_index: dict, file_to_facto
                     "factorgroup": factorgroup,
                     "ID": only_id,
                     "Language": language_value,
-                    "highlight_yellow": is_text_file or is_b20_id  # Track which cells need highlighting
+                    "highlight_yellow": is_text_file or is_b20_id  
                 })
 
 
@@ -226,16 +205,15 @@ def generate_excel_report(output_folder: Path, marken_index: dict, file_to_facto
 
     reordered_data = []
     for _, row in df_assets.iterrows():
-        raw_fg = str(row["ID"])
-        group_prefix = raw_fg[:2]
+        raw_factor = str(row["factorgroup"])
+        group_prefix = raw_factor[:2]
         try:
             group = str(int(group_prefix))
         except ValueError:
             group = group_prefix
 
-        # Also remove underscores from the reordered data
         clean_factor = str(row["factorgroup"]).replace('_', '')
-        clean_factorgroup = str(row["factorgroup"]).replace('_', '')
+        clean_factorgroup = str(row["factor"]).replace('_', '')
         
         reordered_data.append({
             "Group": group,
@@ -248,60 +226,49 @@ def generate_excel_report(output_folder: Path, marken_index: dict, file_to_facto
     df_reordered = pd.DataFrame(reordered_data, columns=["Group", "factor", "factorgroup", "ID", "Language"])
     df_reordered['factor'] = df_reordered['factor'].astype(str)
     
-    # Convert Group to numeric for proper sorting
     df_reordered['Group_num'] = pd.to_numeric(df_reordered['Group'], errors='coerce').fillna(999).astype(int)
     
-    # Extract numeric prefix from factor for proper sorting
     df_reordered['factor_num'] = df_reordered['factor'].str.extract(r'^(\d+)')[0]
     df_reordered['factor_num'] = pd.to_numeric(df_reordered['factor_num'], errors='coerce').fillna(999).astype(int)
     
-    # Sort by Group (numeric), then by factor numeric prefix, then by factor string
     df_reordered = df_reordered.sort_values(
         by=['Group_num', 'factor_num', 'factor'], 
         ascending=[True, True, True]
     ).reset_index(drop=True)
     
-    # Remove the temporary sorting columns
     df_reordered = df_reordered.drop(['factor_num', 'Group_num'], axis=1)
 
     with pd.ExcelWriter(final_excel_path, engine='openpyxl') as writer:
         df_assets.to_excel(writer, index=False, sheet_name="Assets")
         df_reordered.to_excel(writer, index=False, sheet_name="Reordered")
 
-        # Apply yellow highlighting to Language column cells
         workbook = writer.book
         from openpyxl.styles import PatternFill
 
         yellow_fill = PatternFill(start_color='FFFF00', end_color='FFFF00', fill_type='solid')
 
-        # Highlight in Assets sheet
         assets_sheet = workbook['Assets']
         language_col_idx = 4  # Language is the 4th column (D)
         for row_idx in range(2, len(df_assets) + 2):  # Start from row 2 (after header)
             cell = assets_sheet.cell(row=row_idx, column=language_col_idx)
-            # Check if this row should be highlighted based on the highlight_yellow flag
             if row_idx - 2 < len(data):
                 if data[row_idx - 2].get("highlight_yellow", False):
                     cell.fill = yellow_fill
 
-        # Highlight in Reordered sheet
         reordered_sheet = workbook['Reordered']
         language_col_idx = 5  # Language is the 5th column (E)
         id_col_idx = 4  # ID is the 4th column (D)
 
-        # Create a mapping of ID to highlight_yellow flag for quick lookup
         id_to_highlight = {item["ID"]: item.get("highlight_yellow", False) for item in data}
 
         for row_idx in range(2, len(df_reordered) + 2):  # Start from row 2 (after header)
             cell = reordered_sheet.cell(row=row_idx, column=language_col_idx)
-            # Read the ID from this row to check if it should be highlighted
             id_cell = reordered_sheet.cell(row=row_idx, column=id_col_idx)
             id_value = id_cell.value
             if id_value and id_to_highlight.get(id_value, False):
                 cell.fill = yellow_fill
 
     return final_excel_path
-
 
 
 def add_brand_pages_with_png_extensions(elements, marken_spalten, renamed_files_by_folder_and_marke, marken_index):
