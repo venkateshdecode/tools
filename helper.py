@@ -235,7 +235,7 @@ def generate_excel_report(output_folder: Path, marken_index: dict, file_to_facto
 
         # Also remove underscores from the reordered data
         clean_factor = str(row["factorgroup"]).replace('_', '')
-        clean_factorgroup = str(row["factor"]).replace('_', '')
+        clean_factorgroup = str(row["factorgroup"]).replace('_', '')
         
         reordered_data.append({
             "Group": group,
@@ -246,7 +246,23 @@ def generate_excel_report(output_folder: Path, marken_index: dict, file_to_facto
         })
 
     df_reordered = pd.DataFrame(reordered_data, columns=["Group", "factor", "factorgroup", "ID", "Language"])
-    df_reordered = df_reordered.sort_values(by='Group', ascending=True).reset_index(drop=True)
+    df_reordered['factor'] = df_reordered['factor'].astype(str)
+    
+    # Convert Group to numeric for proper sorting
+    df_reordered['Group_num'] = pd.to_numeric(df_reordered['Group'], errors='coerce').fillna(999).astype(int)
+    
+    # Extract numeric prefix from factor for proper sorting
+    df_reordered['factor_num'] = df_reordered['factor'].str.extract(r'^(\d+)')[0]
+    df_reordered['factor_num'] = pd.to_numeric(df_reordered['factor_num'], errors='coerce').fillna(999).astype(int)
+    
+    # Sort by Group (numeric), then by factor numeric prefix, then by factor string
+    df_reordered = df_reordered.sort_values(
+        by=['Group_num', 'factor_num', 'factor'], 
+        ascending=[True, True, True]
+    ).reset_index(drop=True)
+    
+    # Remove the temporary sorting columns
+    df_reordered = df_reordered.drop(['factor_num', 'Group_num'], axis=1)
 
     with pd.ExcelWriter(final_excel_path, engine='openpyxl') as writer:
         df_assets.to_excel(writer, index=False, sheet_name="Assets")
