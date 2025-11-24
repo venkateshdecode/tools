@@ -9,7 +9,7 @@ from tab7 import center_on_canvas_tool
 
 # Configure Streamlit page
 st.set_page_config(
-    page_title="Brand Assets Management Tools​",
+    page_title="Brand Asset Management Tools​",
     page_icon="🔧",
     layout="wide"
 )
