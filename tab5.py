@@ -38,15 +38,29 @@ def brand_renamer_tool():
         if not st.session_state.processing_complete:
             with st.spinner("Extracting and analyzing files..."):
                 temp_dir = extract_zip_to_temp(uploaded_file)
-                input_folder = Path(temp_dir)
-               
-                items = os.listdir(temp_dir)
+                
+                # Determine the actual input folder
+                items = [item for item in os.listdir(temp_dir) if not item.startswith('.')]
+                
+                # ✅ ROOT CAUSE FIX: If flat structure, create a dedicated input subfolder
                 if len(items) == 1 and os.path.isdir(os.path.join(temp_dir, items[0])):
+                    # Single root folder - use it as input
                     input_folder = Path(temp_dir) / items[0]
-               
+                else:
+                    # Flat structure - move everything to an input subfolder
+                    input_folder = Path(temp_dir) / "input"
+                    input_folder.mkdir(exist_ok=True)
+                    
+                    # Move all items to input folder
+                    for item in items:
+                        src = Path(temp_dir) / item
+                        dst = input_folder / item
+                        shutil.move(str(src), str(dst))
+                
+                # Now create output folder at temp_dir level (guaranteed to be separate)
                 output_folder = Path(temp_dir) / "output"
                 output_folder.mkdir(exist_ok=True)
-               
+                        
                 marken_set, _, _ = analyze_files_by_filename(input_folder)
                
                 if not marken_set:
@@ -63,18 +77,14 @@ def brand_renamer_tool():
                     index=0
                 )
                
+                marken_index = {erste_marke: "01"}
+                aktuelle_nummer = 2
+                for marke in sorted(marken_set):
+                    if marke != erste_marke:
+                        marken_index[marke] = f"{aktuelle_nummer:02d}"
+                        aktuelle_nummer += 1
+               
                 if st.button("Process Files and Generate Reports", type="primary"):
-                    # Re-analyze to ensure we have ALL brands before processing
-                    marken_set, _, _ = analyze_files_by_filename(input_folder)
-                    
-                    # CREATE marken_index HERE, inside the button handler with ALL found brands
-                    marken_index = {erste_marke: "01"}
-                    aktuelle_nummer = 2
-                    for marke in sorted(marken_set):
-                        if marke != erste_marke:
-                            marken_index[marke] = f"{aktuelle_nummer:02d}"
-                            aktuelle_nummer += 1
-                    
                     with st.spinner("Processing files..."):
                         # Process and rename files
                         renamed_files, file_to_factorgroup = process_files(
