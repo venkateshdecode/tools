@@ -115,9 +115,22 @@ def process_files(input_folder, marken_index, output_root):
         
         files_to_process = []
         for file in sorted(subfolder.iterdir()):
-            if file.suffix.lower() not in ALL_ALLOWED_EXTENSIONS:
+            # Skip if not a file
+            if not file.is_file():
                 continue
+                
+            # Skip files without allowed extensions
+            if file.suffix.lower() not in ALL_ALLOWED_EXTENSIONS and file.suffix != '':
+                continue
+                
+            # Accept files with no extension as well
             marke = extract_brand(file.stem)
+            
+            # CRITICAL FIX: Skip files where brand extraction failed or brand not in index
+            if not marke or marke == "unknown" or marke not in marken_index:
+                print(f"Warning: Skipping file {file.name} - brand '{marke}' not found in marken_index")
+                continue
+                
             brand_counters[marke] += 1
             files_to_process.append((file, marke))
         
@@ -127,6 +140,11 @@ def process_files(input_folder, marken_index, output_root):
             brand_counters[marke] += 1  # Increment counter for this brand
             count_str = f"{brand_counters[marke]:02d}"  # Format as 01, 02, 03, etc.
             
+            # CRITICAL FIX: Double-check brand exists in index before proceeding
+            if marke not in marken_index:
+                print(f"Warning: Skipping file {file.name} - brand '{marke}' not in marken_index")
+                continue
+                
             markennummer = marken_index[marke]
             cleaned = get_cleaned_filename_without_brand(file.name, marke)
             
@@ -134,11 +152,15 @@ def process_files(input_folder, marken_index, output_root):
             ziel = output_root / neuer_name
 
             if file.suffix.lower() in ALLOWED_IMAGE_EXTENSIONS:
-                with PILImage.open(file) as img:
-                    if img.mode in ('RGBA', 'LA') or (img.mode == 'P' and 'transparency' in img.info):
-                        img.save(ziel, format='PNG')
-                    else:
-                        img.convert("RGBA").save(ziel, format='PNG')
+                try:
+                    with PILImage.open(file) as img:
+                        if img.mode in ('RGBA', 'LA') or (img.mode == 'P' and 'transparency' in img.info):
+                            img.save(ziel, format='PNG')
+                        else:
+                            img.convert("RGBA").save(ziel, format='PNG')
+                except Exception as e:
+                    print(f"Error processing image {file.name}: {e}")
+                    shutil.copy2(file, ziel)
             else:
                 shutil.copy2(file, ziel)
 
@@ -564,9 +586,32 @@ def extract_images_from_xlsx(xlsx_file, output_dir):
         return 0, [], str(e)
 
 def extract_brand(file_stem):
-    """Extract brand name from filename using pattern matching"""
+    """Extract brand name from filename using pattern matching - IMPROVED VERSION"""
+    # Remove any leading/trailing whitespace
+    file_stem = file_stem.strip()
+    
+    # Split by common delimiters
     parts = re.split(r'[ _\-]', file_stem)
-    return re.sub(r'[^a-z0-9]', '', parts[0].lower()) if parts else "unknown"
+    
+    if not parts:
+        return "unknown"
+    
+    # Take the first part and clean it
+    first_part = parts[0].lower()
+    # Remove all non-alphanumeric characters
+    cleaned = re.sub(r'[^a-z0-9]', '', first_part)
+    
+    # If the result is empty or too short, return unknown
+    if not cleaned or len(cleaned) < 2:
+        return "unknown"
+    
+    # If it starts with numbers (like "01b01"), it might be already processed - extract the brand part
+    # Pattern: digits + 'b' + digits + brand
+    match = re.match(r'^\d{2}b\d{2}([a-z]+)', cleaned)
+    if match:
+        return match.group(1)
+    
+    return cleaned
 
 def erkenne_marken_aus_ordnern(input_folder):
     """Recognize brands from subfolders (original method)"""
@@ -785,7 +830,7 @@ def add_brand_pages(elements, marken_spalten, renamed_files_by_folder_and_marke)
         elements.append(table)
 
 def analyze_files_by_filename(input_folder):
-    """Analyze files by extracting brand names from filenames"""
+    """Analyze files by extracting brand names from filenames - IMPROVED VERSION"""
     dateien = []
     marken_set = set()
     renamed_files_by_folder_and_marke = defaultdict(lambda: defaultdict(list))
@@ -795,9 +840,20 @@ def analyze_files_by_filename(input_folder):
             continue
 
         for file in sorted(subfolder.iterdir()):
-            if file.suffix.lower() not in ALL_ALLOWED_EXTENSIONS:
+            if not file.is_file():
                 continue
+                
+            # Accept files with allowed extensions or no extension
+            if file.suffix.lower() not in ALL_ALLOWED_EXTENSIONS and file.suffix != '':
+                continue
+                
             marke = extract_brand(file.stem)
+            
+            # Skip unknown brands
+            if marke == "unknown":
+                print(f"Warning: Could not extract brand from filename: {file.name}")
+                continue
+                
             marken_set.add(marke)
             dateien.append({
                 "original_file": file,
@@ -862,17 +918,17 @@ def extract_zip_to_temp(uploaded_file):
         zip_ref.extractall(temp_dir)
     return temp_dir
 
-def extract_brand(file_stem):
-    """Extract brand name from filename using pattern matching"""
-    parts = re.split(r'[ _\-]', file_stem)
-    return re.sub(r'[^a-z0-9]', '', parts[0].lower()) if parts else "unknown"
-
 def clean_letters_only(text):
     return re.sub(r'[^A-Za-z]', '', text)
 
 def get_cleaned_filename_without_brand(filename, brand):
-    full_letters = clean_letters_only(Path(filename).stem.lower())
-    return full_letters.replace(brand, '', 1)
+    """Get cleaned filename without brand name"""
+    # Remove the extension first if present
+    stem = Path(filename).stem
+    full_letters = clean_letters_only(stem.lower())
+    # Remove the brand from the beginning
+    cleaned = full_letters.replace(brand, '', 1)
+    return cleaned
 
 def generate_filename_based_pdf_report(input_folder, erste_marke=None, processed_files_mapping=None):
     """Generate PDF report based on filename brand analysis with final processed labels"""
