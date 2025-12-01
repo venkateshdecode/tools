@@ -18,21 +18,12 @@ from reportlab.platypus import (
 )
 import openpyxl
 
-
-ALLOWED_IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.bmp', '.gif', '.tiff', '.tif', '.webp', '.svg', '.ico', '.heic', '.heif', '.raw'}
-ALLOWED_TEXT_EXTENSIONS = {'.txt', '.md', '.csv', '.doc', '.docx', '.pdf', '.rtf', '.odt', '.tex'}
-ALLOWED_VIDEO_EXTENSIONS = {'.mp4', '.avi', '.mov', '.wmv', '.flv', '.mkv', '.webm', '.m4v', '.3gp', '.ogv', '.mpg', '.mpeg', '.vob', '.mts', '.m2ts'}
-ALLOWED_AUDIO_EXTENSIONS = {'.mp3', '.wav', '.aac', '.flac', '.ogg', '.m4a', '.wma', '.opus', '.aiff', '.ape', '.alac'}
-ALLOWED_ARCHIVE_EXTENSIONS = {'.zip', '.rar', '.7z', '.tar', '.gz', '.bz2', '.xz'}
-ALLOWED_CODE_EXTENSIONS = {'.py', '.js', '.html', '.css', '.java', '.cpp', '.c', '.h', '.php', '.rb', '.go', '.rs', '.swift', '.kt'}
-ALLOWED_DATA_EXTENSIONS = {'.json', '.xml', '.yaml', '.yml', '.sql', '.db', '.sqlite', '.xlsx', '.xls'}
-ALLOWED_OTHER_EXTENSIONS = {'.psd', '.ai', '.sketch', '.fig', '.eps', '.indd', '.dwg', '.stl', '.obj', '.fbx', '.blend'}
-
-# Combine all extensions - if a file has ANY extension or NO extension, process it
-ALL_ALLOWED_EXTENSIONS = (ALLOWED_IMAGE_EXTENSIONS | ALLOWED_TEXT_EXTENSIONS | 
-                          ALLOWED_VIDEO_EXTENSIONS | ALLOWED_AUDIO_EXTENSIONS |
-                          ALLOWED_ARCHIVE_EXTENSIONS | ALLOWED_CODE_EXTENSIONS |
-                          ALLOWED_DATA_EXTENSIONS | ALLOWED_OTHER_EXTENSIONS)
+# Defined file types
+ALLOWED_IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.bmp', '.gif', '.tiff', '.webp'}
+ALLOWED_TEXT_EXTENSIONS = {'.txt', '.md', '.csv'}
+ALLOWED_VIDEO_EXTENSIONS = {'.mp4', '.avi', '.mov', '.wmv', '.flv', '.mkv', '.webm', '.m4v', '.3gp', '.ogv'}
+ALLOWED_AUDIO_EXTENSIONS = {'.mp3', '.wav', '.aac', '.flac', '.ogg', '.m4a', '.wma'}
+ALL_ALLOWED_EXTENSIONS = ALLOWED_IMAGE_EXTENSIONS.union(ALLOWED_TEXT_EXTENSIONS).union(ALLOWED_VIDEO_EXTENSIONS).union(ALLOWED_AUDIO_EXTENSIONS)
 
 # Helper functions from both files
 def extract_zip_to_temp(uploaded_file):
@@ -115,22 +106,12 @@ def process_files(input_folder, marken_index, output_root):
         
         files_to_process = []
         for file in sorted(subfolder.iterdir()):
-            # Skip if not a file
-            if not file.is_file():
+            # Skip hidden and system files
+            if file.name.startswith('.') or file.name.startswith('~') or file.name == 'Thumbs.db':
                 continue
-                
-            # Skip files without allowed extensions
             if file.suffix.lower() not in ALL_ALLOWED_EXTENSIONS and file.suffix != '':
                 continue
-                
-            # Accept files with no extension as well
             marke = extract_brand(file.stem)
-            
-            # CRITICAL FIX: Skip files where brand extraction failed or brand not in index
-            if not marke or marke == "unknown" or marke not in marken_index:
-                print(f"Warning: Skipping file {file.name} - brand '{marke}' not found in marken_index")
-                continue
-                
             brand_counters[marke] += 1
             files_to_process.append((file, marke))
         
@@ -140,12 +121,7 @@ def process_files(input_folder, marken_index, output_root):
             brand_counters[marke] += 1  # Increment counter for this brand
             count_str = f"{brand_counters[marke]:02d}"  # Format as 01, 02, 03, etc.
             
-            # CRITICAL FIX: Double-check brand exists in index before proceeding
-            if marke not in marken_index:
-                print(f"Warning: Skipping file {file.name} - brand '{marke}' not in marken_index")
-                continue
-                
-            markennummer = marken_index[marke]
+            markennummer = marken_index.get(marke, "99")  # Use .get() with default value
             cleaned = get_cleaned_filename_without_brand(file.name, marke)
             
             neuer_name = f"{markennummer}B{blocknummer}{marke}{count_str}{cleaned}{file.suffix.lower()}"
@@ -159,7 +135,7 @@ def process_files(input_folder, marken_index, output_root):
                         else:
                             img.convert("RGBA").save(ziel, format='PNG')
                 except Exception as e:
-                    print(f"Error processing image {file.name}: {e}")
+                    # If image processing fails, just copy the file
                     shutil.copy2(file, ziel)
             else:
                 shutil.copy2(file, ziel)
@@ -169,126 +145,56 @@ def process_files(input_folder, marken_index, output_root):
 
     return renamed_files_by_folder_and_marke, file_to_factorgroup
 
-def is_valid_file(file_path):
-    """Check if file should be processed - accept ALL files except hidden/system files"""
-    filename = Path(file_path).name
-    if filename.startswith('.') or filename.startswith('~') or filename == 'Thumbs.db':
-        return False
-    return True
-
 def generate_excel_report(output_folder: Path, marken_index: dict, file_to_factorgroup: dict):
-    """Generate Excel report - ACCEPT ALL FILE TYPES"""
     final_excel_path = output_folder / "IcAt_Overview_Final.xlsx"
 
     nummer_zu_marke = {v: k for k, v in marken_index.items()}
     data = []
-
     for file in sorted(output_folder.iterdir()):
-        if file.is_file() and is_valid_file(file):
+        if file.is_file() and file.suffix.lower() in {'.png', '.txt', '.csv', '.md'}:
             name = file.stem
-            file_ext = file.suffix.lower() if file.suffix else ''
-
             match = re.match(r"(\d{2})B(\d{2})([a-z0-9]+)", name, re.IGNORECASE)
             if match:
                 markennummer, blocknummer, marke = match.groups()
                 factor = nummer_zu_marke.get(markennummer, marke)
-
+                
+                # Get factorgroup and remove underscores
                 factorgroup = file_to_factorgroup.get(file.name, f"{blocknummer}Unknown")
                 factorgroup = factorgroup.replace('_', '')  # Remove all underscores
-
-                only_id = name
-                is_text_file = False
-                is_b20_id = False
-
-                if "B20" in only_id.upper():
-                    is_b20_id = True
-                    language_value = only_id + ".png"
-                elif file_ext == '.txt':
-                    is_text_file = True
-                    try:
-                        with open(file, 'r', encoding='utf-8', errors='ignore') as txt_file:
-                            txt_content = txt_file.read().strip()
-                            language_value = txt_content if txt_content else "[Empty file]"
-                    except Exception as e:
-                        language_value = f"[Error reading file: {str(e)}]"
-                else:
-                    language_value = name + file_ext
-
+                
                 data.append({
                     "factor": factor,
                     "factorgroup": factorgroup,
-                    "ID": only_id,
-                    "Language": language_value,
-                    "highlight_yellow": is_text_file or is_b20_id  
+                    "ID": name
                 })
 
-
-    df_assets = pd.DataFrame(data, columns=["factor", "factorgroup", "ID", "Language"])
+    df_assets = pd.DataFrame(data, columns=["factor", "factorgroup", "ID"])
 
     reordered_data = []
     for _, row in df_assets.iterrows():
-        raw_factor = str(row["factorgroup"])
-        group_prefix = raw_factor[:2]
+        raw_fg = str(row["ID"])
+        group_prefix = raw_fg[:2]
         try:
             group = str(int(group_prefix))
         except ValueError:
             group = group_prefix
 
+        # Also remove underscores from the reordered data
         clean_factor = str(row["factorgroup"]).replace('_', '')
         clean_factorgroup = str(row["factor"]).replace('_', '')
-        
+
         reordered_data.append({
             "Group": group,
             "factor": clean_factor,
             "factorgroup": clean_factorgroup,
-            "ID": row["ID"],
-            "Language": row["Language"] 
+            "ID": row["ID"]
         })
 
-    df_reordered = pd.DataFrame(reordered_data, columns=["Group", "factor", "factorgroup", "ID", "Language"])
-    df_reordered['factor'] = df_reordered['factor'].astype(str)
-    
-    df_reordered['Group_num'] = pd.to_numeric(df_reordered['Group'], errors='coerce').fillna(999).astype(int)
-    
-    df_reordered['factor_num'] = df_reordered['factor'].str.extract(r'^(\d+)')[0]
-    df_reordered['factor_num'] = pd.to_numeric(df_reordered['factor_num'], errors='coerce').fillna(999).astype(int)
-    
-    df_reordered = df_reordered.sort_values(
-        by=['Group_num', 'factor_num', 'factor'], 
-        ascending=[True, True, True]
-    ).reset_index(drop=True)
-    
-    df_reordered = df_reordered.drop(['factor_num', 'Group_num'], axis=1)
-
+    df_reordered = pd.DataFrame(reordered_data, columns=["Group", "factor", "factorgroup", "ID"])
+    df_reordered = df_reordered.sort_values(by='Group', ascending=True).reset_index(drop=True)
     with pd.ExcelWriter(final_excel_path, engine='openpyxl') as writer:
         df_assets.to_excel(writer, index=False, sheet_name="Assets")
         df_reordered.to_excel(writer, index=False, sheet_name="Reordered")
-
-        workbook = writer.book
-        from openpyxl.styles import PatternFill
-
-        yellow_fill = PatternFill(start_color='FFFF00', end_color='FFFF00', fill_type='solid')
-
-        assets_sheet = workbook['Assets']
-        language_col_idx = 4  # Language is the 4th column (D)
-        for row_idx in range(2, len(df_assets) + 2):  # Start from row 2 (after header)
-            cell = assets_sheet.cell(row=row_idx, column=language_col_idx)
-            if row_idx - 2 < len(data):
-                if data[row_idx - 2].get("highlight_yellow", False):
-                    cell.fill = yellow_fill
-
-        reordered_sheet = workbook['Reordered']
-        language_col_idx = 5  # Language is the 5th column (E)
-        id_col_idx = 4  # ID is the 4th column (D)
-
-        id_to_highlight = {item["ID"]: item.get("highlight_yellow", False) for item in data}
-
-        for row_idx in range(2, len(df_reordered) + 2):  # Start from row 2 (after header)
-            cell = reordered_sheet.cell(row=row_idx, column=language_col_idx)
-            id_cell = reordered_sheet.cell(row=row_idx, column=id_col_idx)
-            id_value = id_cell.value
-            if id_value and id_to_highlight.get(id_value, False):
-                cell.fill = yellow_fill
 
     return final_excel_path
 
@@ -586,32 +492,9 @@ def extract_images_from_xlsx(xlsx_file, output_dir):
         return 0, [], str(e)
 
 def extract_brand(file_stem):
-    """Extract brand name from filename using pattern matching - IMPROVED VERSION"""
-    # Remove any leading/trailing whitespace
-    file_stem = file_stem.strip()
-    
-    # Split by common delimiters
+    """Extract brand name from filename using pattern matching"""
     parts = re.split(r'[ _\-]', file_stem)
-    
-    if not parts:
-        return "unknown"
-    
-    # Take the first part and clean it
-    first_part = parts[0].lower()
-    # Remove all non-alphanumeric characters
-    cleaned = re.sub(r'[^a-z0-9]', '', first_part)
-    
-    # If the result is empty or too short, return unknown
-    if not cleaned or len(cleaned) < 2:
-        return "unknown"
-    
-    # If it starts with numbers (like "01b01"), it might be already processed - extract the brand part
-    # Pattern: digits + 'b' + digits + brand
-    match = re.match(r'^\d{2}b\d{2}([a-z]+)', cleaned)
-    if match:
-        return match.group(1)
-    
-    return cleaned
+    return re.sub(r'[^a-z0-9]', '', parts[0].lower()) if parts else "unknown"
 
 def erkenne_marken_aus_ordnern(input_folder):
     """Recognize brands from subfolders (original method)"""
@@ -830,7 +713,7 @@ def add_brand_pages(elements, marken_spalten, renamed_files_by_folder_and_marke)
         elements.append(table)
 
 def analyze_files_by_filename(input_folder):
-    """Analyze files by extracting brand names from filenames - IMPROVED VERSION"""
+    """Analyze files by extracting brand names from filenames"""
     dateien = []
     marken_set = set()
     renamed_files_by_folder_and_marke = defaultdict(lambda: defaultdict(list))
@@ -840,20 +723,9 @@ def analyze_files_by_filename(input_folder):
             continue
 
         for file in sorted(subfolder.iterdir()):
-            if not file.is_file():
+            if file.suffix.lower() not in ALL_ALLOWED_EXTENSIONS:
                 continue
-                
-            # Accept files with allowed extensions or no extension
-            if file.suffix.lower() not in ALL_ALLOWED_EXTENSIONS and file.suffix != '':
-                continue
-                
             marke = extract_brand(file.stem)
-            
-            # Skip unknown brands
-            if marke == "unknown":
-                print(f"Warning: Could not extract brand from filename: {file.name}")
-                continue
-                
             marken_set.add(marke)
             dateien.append({
                 "original_file": file,
@@ -918,17 +790,17 @@ def extract_zip_to_temp(uploaded_file):
         zip_ref.extractall(temp_dir)
     return temp_dir
 
+def extract_brand(file_stem):
+    """Extract brand name from filename using pattern matching"""
+    parts = re.split(r'[ _\-]', file_stem)
+    return re.sub(r'[^a-z0-9]', '', parts[0].lower()) if parts else "unknown"
+
 def clean_letters_only(text):
     return re.sub(r'[^A-Za-z]', '', text)
 
 def get_cleaned_filename_without_brand(filename, brand):
-    """Get cleaned filename without brand name"""
-    # Remove the extension first if present
-    stem = Path(filename).stem
-    full_letters = clean_letters_only(stem.lower())
-    # Remove the brand from the beginning
-    cleaned = full_letters.replace(brand, '', 1)
-    return cleaned
+    full_letters = clean_letters_only(Path(filename).stem.lower())
+    return full_letters.replace(brand, '', 1)
 
 def generate_filename_based_pdf_report(input_folder, erste_marke=None, processed_files_mapping=None):
     """Generate PDF report based on filename brand analysis with final processed labels"""
