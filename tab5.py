@@ -63,14 +63,18 @@ def brand_renamer_tool():
                     index=0
                 )
                
-                marken_index = {erste_marke: "01"}
-                aktuelle_nummer = 2
-                for marke in sorted(marken_set):
-                    if marke != erste_marke:
-                        marken_index[marke] = f"{aktuelle_nummer:02d}"
-                        aktuelle_nummer += 1
-               
                 if st.button("Process Files and Generate Reports", type="primary"):
+                    # Re-analyze to ensure we have ALL brands before processing
+                    marken_set, _, _ = analyze_files_by_filename(input_folder)
+                    
+                    # CREATE marken_index HERE, inside the button handler with ALL found brands
+                    marken_index = {erste_marke: "01"}
+                    aktuelle_nummer = 2
+                    for marke in sorted(marken_set):
+                        if marke != erste_marke:
+                            marken_index[marke] = f"{aktuelle_nummer:02d}"
+                            aktuelle_nummer += 1
+                    
                     with st.spinner("Processing files..."):
                         # Process and rename files
                         renamed_files, file_to_factorgroup = process_files(
