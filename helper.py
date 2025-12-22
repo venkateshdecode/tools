@@ -300,14 +300,17 @@ def add_brand_pages_with_png_extensions(elements, marken_spalten, renamed_files_
         assets = []
         for folder in renamed_files_by_folder_and_marke:
             folder_assets = renamed_files_by_folder_and_marke[folder].get(marke, [])
+            brand_counter = 1  # Add sequential counter for each brand in each folder
             for pfad, original_name in folder_assets:
                 # Generate the ID name with .png extension for display
                 blocknummer = re.sub(r'\D', '', folder)[:2].zfill(2)
                 markennummer = marken_index[marke]
+                count_str = f"{brand_counter:02d}"  # Format as 01, 02, 03, etc.
                 cleaned = get_cleaned_filename_without_brand(original_name, marke)
                 original_ext = Path(original_name).suffix.lower()  # Get actual extension
-                id_name = f"{markennummer}B{blocknummer}{marke}{cleaned}{original_ext}"  # Add .png here
+                id_name = f"{markennummer}B{blocknummer}{marke}{count_str}{cleaned}{original_ext}"  # Include counter
                 assets.append((pfad, id_name))
+                brand_counter += 1  # Increment counter for next file
 
         if not assets:
             continue
@@ -392,16 +395,19 @@ def generate_filename_based_pdf_report_with_extensions(input_folder, erste_marke
         for _, marke in marken_spalten:
             eintraege = abschnitt.get(marke, [])
             zellen = []
+            brand_counter = 1  # Add sequential counter for each brand
             for p, original_name in eintraege:
                 # Generate the ID name and add .png extension for display
                 blocknummer = re.sub(r'\D', '', folder)[:2].zfill(2)
                 markennummer = marken_index[marke]
+                count_str = f"{brand_counter:02d}"  # Format as 01, 02, 03, etc.
                 cleaned = get_cleaned_filename_without_brand(original_name, marke)
                 original_ext = Path(original_name).suffix.lower()  # Get actual extension
-                id_name = f"{markennummer}B{blocknummer}{marke}{cleaned}{original_ext}"  # Add .png here
-                
+                id_name = f"{markennummer}B{blocknummer}{marke}{count_str}{cleaned}{original_ext}"  # Include counter
+
                 cell = get_asset_cell(p, id_name, len(headers))
                 zellen.append(cell)
+                brand_counter += 1  # Increment counter for next file
             col_data.append(zellen)
             max_rows = max(max_rows, len(zellen))
 
