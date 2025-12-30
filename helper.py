@@ -202,7 +202,7 @@ def generate_excel_report(output_folder: Path, marken_index: dict, file_to_facto
 
                 if "B20" in only_id.upper():
                     is_b20_id = True
-                    language_value = only_id + ".png"
+                    language_value = only_id + file_ext
                 elif file_ext == '.txt':
                     is_text_file = True
                     try:
