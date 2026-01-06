@@ -5,6 +5,7 @@ import shutil
 import zipfile
 from pathlib import Path
 from collections import defaultdict
+from datetime import datetime
 import streamlit as st
 from helper import (
     extract_zip_to_temp,
@@ -26,7 +27,6 @@ def parse_filename(filename):
     ext = Path(filename).suffix.lower()
 
     # Pattern: 2 digits + B + 2 digits + brand name (letters only) + 2 digits + rest
-    # Try to match brand name as letters only first, then extract count_str
     match = re.match(r'^(\d{2})B(\d{2})([a-zA-Z]+)(\d{2})(.*)$', stem)
 
     if match:
@@ -58,21 +58,24 @@ def parse_filename(filename):
     return None
 
 
+def get_base_filename_without_ext(filename):
+    """Get base filename without extension for duplicate detection"""
+    return Path(filename).stem
+
+
 def reconstruct_folder_structure(files_folder):
     """
     Reconstruct the folder structure from parsed filenames.
     Groups files by blocknummer (folder) and marke (brand).
-
-    Returns:
-    - marken_set: set of all brands
-    - renamed_files_by_folder_and_marke: nested dict structure
-    - marken_index: mapping of brand to markennummer
-    - file_to_factorgroup: mapping of filename to folder name
+    Handles duplicate base filenames with different extensions.
     """
     marken_set = set()
     marken_index = {}
     renamed_files_by_folder_and_marke = defaultdict(lambda: defaultdict(list))
     file_to_factorgroup = {}
+    
+    # Track unique base filenames for counting
+    unique_base_files = defaultdict(set)  # folder -> set of base filenames
 
     # Collect all valid files
     parsed_files = []
@@ -91,7 +94,7 @@ def reconstruct_folder_structure(files_folder):
 
         # Skip Excel and PDF files from previous runs
         if file_path.suffix.lower() in ['.xlsx', '.pdf']:
-            if 'Overview' in file_path.name or 'Report' in file_path.name:
+            if any(keyword in file_path.name for keyword in ['Overview', 'Report', 'IcAt']):
                 skipped_files.append(f"{file_path.name} (report file)")
                 continue
 
@@ -117,40 +120,65 @@ def reconstruct_folder_structure(files_folder):
         if marke not in marken_index:
             marken_index[marke] = markennummer
 
-        # Create folder name - use just blocknummer to match Tab 5 output format
-        # The folder_name will be like "00Folder", "01Folder", etc.
+        # Create folder name
         folder_name = f"{blocknummer}Folder"
+
+        # Track unique base filename for this folder
+        base_filename = get_base_filename_without_ext(file_path.name)
+        unique_base_files[folder_name].add(base_filename)
 
         # Add to structure
         renamed_files_by_folder_and_marke[folder_name][marke].append(
             (file_path, file_path.name)
         )
 
-        # Map file to factorgroup - this is what goes into Excel's factorgroup column
+        # Map file to factorgroup
         file_to_factorgroup[file_path.name] = folder_name
 
     # Prepare debug info
     debug_info = {
         'total_files': total_files,
         'parsed_files': len(parsed_files),
-        'skipped_files': skipped_files
+        'skipped_files': skipped_files,
+        'unique_counts': {folder: len(bases) for folder, bases in unique_base_files.items()}
     }
 
     return marken_set, renamed_files_by_folder_and_marke, marken_index, file_to_factorgroup, debug_info
+
+
+def find_existing_reports(files_folder):
+    """Find existing PDF and Excel reports in the folder"""
+    pdf_file = None
+    excel_file = None
+    
+    for file in Path(files_folder).iterdir():
+        if not file.is_file():
+            continue
+            
+        # Look for Excel file
+        if file.suffix.lower() == '.xlsx' and 'IcAt' in file.name and 'Overview' in file.name:
+            excel_file = file
+            
+        # Look for PDF file
+        if file.suffix.lower() == '.pdf' and ('Brand' in file.name or 'Report' in file.name or 'IcAt' in file.name):
+            pdf_file = file
+    
+    return pdf_file, excel_file
 
 
 def regenerate_reports_from_folder(files_folder):
     """
     Regenerate PDF and Excel reports from a folder containing Tab 5 output files.
     Uses the EXISTING Excel file to get the correct factorgroup mappings!
+    Preserves manual folder structure changes from the Excel file.
     """
     import pandas as pd
 
-    # CRITICAL: Read the existing Excel file to get factorgroup mappings
-    existing_excel = Path(files_folder) / "IcAt_Overview_Final.xlsx"
-
-    if not existing_excel.exists():
-        return None, None, "Error: IcAt_Overview_Final.xlsx not found in the folder. This file is required to regenerate reports."
+    # Find existing reports (flexible naming)
+    old_pdf_file, existing_excel = find_existing_reports(files_folder)
+    
+    if not existing_excel or not existing_excel.exists():
+        return None, None, "Error: Excel overview file not found in the folder. Please ensure the Excel file from Tab 5 is included in the ZIP."
 
     # Read existing Excel to get the file_to_factorgroup mapping
     try:
@@ -163,19 +191,14 @@ def regenerate_reports_from_folder(files_folder):
             lang_val = str(row['Language'])
             factorgroup = str(row['factorgroup'])
 
-            # For normal files, Language contains the full filename with extension
-            # For text files, Language contains the text content
-            # For B20 files, Language contains the full filename with extension
-
             # Check if Language looks like a filename (has an extension)
-            if '.' in lang_val and not lang_val.startswith('['):  # Not an error message
+            if '.' in lang_val and not lang_val.startswith('['):
                 filename = lang_val
                 file_to_factorgroup[filename] = factorgroup
 
-                if idx < 5:  # Debug: show first 5 mappings
+                if idx < 5:
                     print(f"  Row {idx}: '{filename}' -> {factorgroup}")
             elif idx < 5:
-                # This is likely a text file - skip it for now
                 print(f"  Row {idx}: Skipping (text content): '{lang_val[:30]}...'")
 
         print(f"✅ Loaded {len(file_to_factorgroup)} file mappings from existing Excel")
@@ -191,7 +214,7 @@ def regenerate_reports_from_folder(files_folder):
         error_msg += f"Successfully parsed: {debug_info['parsed_files']}\n"
         if debug_info['skipped_files']:
             error_msg += f"\nSkipped files:\n"
-            for skipped in debug_info['skipped_files'][:10]:  # Show first 10
+            for skipped in debug_info['skipped_files'][:10]:
                 error_msg += f"  - {skipped}\n"
             if len(debug_info['skipped_files']) > 10:
                 error_msg += f"  ... and {len(debug_info['skipped_files']) - 10} more\n"
@@ -204,7 +227,7 @@ def regenerate_reports_from_folder(files_folder):
         if file_path.is_file() and file_path.name not in file_to_factorgroup:
             # Skip Excel/PDF files
             if file_path.suffix.lower() in ['.xlsx', '.pdf']:
-                if 'Overview' in file_path.name or 'Report' in file_path.name:
+                if any(keyword in file_path.name for keyword in ['Overview', 'Report', 'IcAt']):
                     continue
 
             # Parse to get blocknummer for new files
@@ -249,26 +272,14 @@ def regenerate_reports_from_folder(files_folder):
             return None, None, f"PDF generation failed: {pdf_error}"
 
         # Backup the old Excel file before deleting
-        old_excel_path = Path(files_folder) / "IcAt_Overview_Final.xlsx"
-        backup_excel_path = Path(files_folder) / "IcAt_Overview_Final.xlsx.backup"
-        if old_excel_path.exists():
-            # Create backup for comparison
-            shutil.copy2(old_excel_path, backup_excel_path)
-            # Remove old file to generate fresh
-            old_excel_path.unlink()
+        backup_excel_path = Path(files_folder) / f"{existing_excel.stem}.backup"
+        if existing_excel.exists():
+            shutil.copy2(existing_excel, backup_excel_path)
+            existing_excel.unlink()
 
         # Generate Excel using existing helper function
-        # Note: generate_excel_report will scan ALL files in files_folder
-        # including any newly added images
         print(f"\n📝 Generating Excel report...")
         print(f"  Passing {len(file_to_factorgroup)} file mappings to generate_excel_report")
-
-        # Debug: Show a few sample mappings
-        sample_count = 0
-        for filename, factorgroup in file_to_factorgroup.items():
-            if sample_count < 3:
-                print(f"    Sample: '{filename}' -> '{factorgroup}'")
-                sample_count += 1
 
         excel_path = generate_excel_report(
             Path(files_folder),
@@ -277,26 +288,9 @@ def regenerate_reports_from_folder(files_folder):
         )
 
         # Debug: Check how many entries were added
-        import pandas as pd
         try:
-            df = pd.read_excel(excel_path, sheet_name='Assets')
-            print(f"\n✅ Excel generated with {len(df)} rows")
-
-            # Check specifically for the user's new file
-            user_file = '01B01hersheys06packing.png'
-            if user_file in df['Language'].values:
-                row = df[df['Language'] == user_file].iloc[0]
-                print(f"  ✅ Found user's new file '{user_file}':")
-                print(f"     factor: {row['factor']}")
-                print(f"     factorgroup: {row['factorgroup']}")
-            else:
-                print(f"  ❌ User's new file '{user_file}' NOT FOUND in Excel!")
-                print(f"  Checking if file exists in folder...")
-                file_path = Path(files_folder) / user_file
-                if file_path.exists():
-                    print(f"    ✅ File EXISTS in folder")
-                else:
-                    print(f"    ❌ File DOES NOT EXIST in folder")
+            df_new = pd.read_excel(excel_path, sheet_name='Assets')
+            print(f"\n✅ Excel generated with {len(df_new)} rows")
         except Exception as e:
             print(f"Could not read Excel for debug: {e}")
 
@@ -309,9 +303,13 @@ def regenerate_reports_from_folder(files_folder):
 
 
 def regenerate_reports_tool():
-    """Tab 8: Regenerate PDF and Excel from Tab 5 output + manually added images"""
+    """Tab 6: Regenerate PDF and Excel from Tab 5 output + manually added images"""
     st.header("Re Run Matrix")
-    st.markdown("Upload a ZIP containing Tab 5 output folder with optionally added images. The tool will regenerate PDF and Excel reports.")
+    st.markdown("""
+    Upload a ZIP containing your Tab 5 output folder (with optional manually added images).
+
+    The tool will regenerate updated reports with the current date stamp.
+    """)
 
     # Initialize session state
     if 'regeneration_complete' not in st.session_state:
@@ -320,18 +318,18 @@ def regenerate_reports_tool():
         st.session_state.regenerated_data = {}
 
     uploaded_file = st.file_uploader(
-        "Choose a ZIP file containing Tab 5 output",
+        "Choose a ZIP file containing Tab 5 output (including both PDF and Excel reports)",
         type=['zip'],
     )
 
     # Reset processing state when new file is uploaded
-    if uploaded_file and 'uploaded_file_name_tab8' in st.session_state:
-        if st.session_state.uploaded_file_name_tab8 != uploaded_file.name:
+    if uploaded_file and 'uploaded_file_name_tab6' in st.session_state:
+        if st.session_state.uploaded_file_name_tab6 != uploaded_file.name:
             st.session_state.regeneration_complete = False
             st.session_state.regenerated_data = {}
 
     if uploaded_file:
-        st.session_state.uploaded_file_name_tab8 = uploaded_file.name
+        st.session_state.uploaded_file_name_tab6 = uploaded_file.name
 
         if not st.session_state.regeneration_complete:
             if st.button("Regenerate Reports", type="primary"):
@@ -339,24 +337,21 @@ def regenerate_reports_tool():
                     # Extract ZIP
                     temp_dir = extract_zip_to_temp(uploaded_file)
 
-                    # Find the actual files folder - look for processed_files
+                    # Find the actual files folder
                     root_folder = Path(temp_dir)
 
-                    # Keep descending if there's only one subfolder (to handle extra nesting)
+                    # Keep descending if there's only one subfolder
                     while True:
                         items = [item for item in os.listdir(root_folder) if not item.startswith('.') and not item.startswith('_')]
 
-                        # If only one item and it's a directory, descend into it
                         if len(items) == 1 and os.path.isdir(os.path.join(root_folder, items[0])):
                             root_folder = root_folder / items[0]
                         else:
-                            # Found the actual root level
                             break
 
                     # Look for processed_files folder
                     processed_files_folder = root_folder / "processed_files"
                     if not processed_files_folder.exists():
-                        # Maybe files are directly in root
                         processed_files_folder = root_folder
 
                     # Regenerate reports
@@ -374,57 +369,58 @@ def regenerate_reports_tool():
                         try:
                             df_new = pd.read_excel(excel_path, sheet_name='Assets')
 
-                            # Compare with old Excel
-                            old_excel = processed_files_folder / "IcAt_Overview_Final.xlsx.backup"
-                            if not old_excel.exists():
-                                old_excel = processed_files_folder / "IcAt_Overview_Final.xlsx"
+                            # Compare with backup
+                            backup_files = list(processed_files_folder.glob("*.backup"))
+                            if backup_files:
+                                try:
+                                    df_old = pd.read_excel(backup_files[0], sheet_name='Assets')
+                                    old_count = len(df_old)
+                                    new_count = len(df_new)
+                                    added_count = new_count - old_count
 
-                            try:
-                                df_old = pd.read_excel(old_excel, sheet_name='Assets')
-                                old_count = len(df_old)
-                                new_count = len(df_new)
-                                added_count = new_count - old_count
-
-                                if added_count > 0:
-                                    st.success(f"✅ Excel generated with {new_count} entries ({added_count} NEW entries added!)")
-                                else:
-                                    st.success(f"✅ Excel generated with {new_count} entries (same as before)")
-                            except:
+                                    if added_count > 0:
+                                        st.success(f"✅ Excel generated with {new_count} entries ({added_count} NEW entries added!)")
+                                    else:
+                                        st.success(f"✅ Excel generated with {new_count} entries (same as before)")
+                                except:
+                                    st.success(f"✅ Excel generated with {len(df_new)} entries")
+                            else:
                                 st.success(f"✅ Excel generated with {len(df_new)} entries")
 
                         except Exception as e:
                             st.warning(f"Excel created but couldn't read for stats: {e}")
 
-                    # Create individual processed files ZIP (just like tab5)
+                    # Generate timestamp for filenames
+                    timestamp = datetime.now().strftime("%Y%m%d")
+
+                    # Create individual processed files ZIP
                     zip_buffer = io.BytesIO()
                     with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
                         for file in processed_files_folder.iterdir():
                             if file.is_file():
-                                # Skip old backups
                                 if file.name.endswith('.backup'):
                                     continue
                                 zip_file.write(file, file.name)
                     zip_buffer.seek(0)
 
-                    # Create combined ZIP with processed_files/ and reports/ folders (just like tab5)
+                    # Create combined ZIP with processed_files/ and reports/ folders
                     combined_zip_buffer = io.BytesIO()
                     with zipfile.ZipFile(combined_zip_buffer, 'w', zipfile.ZIP_DEFLATED) as combined_zip:
-                        # Add all processed files to processed_files/ folder
+                        # Add all processed files
                         for file in processed_files_folder.iterdir():
                             if file.is_file():
-                                # Skip old backups
                                 if file.name.endswith('.backup'):
                                     continue
                                 combined_zip.write(file, f"processed_files/{file.name}")
 
-                        # Add PDF report to reports/ folder
+                        # Add PDF report with timestamp
                         if pdf_buffer:
-                            combined_zip.writestr("reports/Brand_Assets_Report.pdf", pdf_buffer.getvalue())
+                            combined_zip.writestr(f"reports/Brand_Assets_Report_update_{timestamp}.pdf", pdf_buffer.getvalue())
 
-                        # Add Excel report to reports/ folder
+                        # Add Excel report with timestamp
                         if excel_path and excel_path.exists():
                             with open(excel_path, 'rb') as excel_file:
-                                combined_zip.writestr("reports/Brand_Assets_Overview.xlsx", excel_file.read())
+                                combined_zip.writestr(f"reports/Brand_Assets_Overview_update_{timestamp}.xlsx", excel_file.read())
 
                     combined_zip_buffer.seek(0)
 
@@ -434,7 +430,8 @@ def regenerate_reports_tool():
                         'excel_path': excel_path,
                         'zip_buffer': zip_buffer,
                         'combined_zip_buffer': combined_zip_buffer,
-                        'temp_dir': temp_dir
+                        'temp_dir': temp_dir,
+                        'timestamp': timestamp
                     }
                     st.session_state.regeneration_complete = True
 
@@ -457,6 +454,8 @@ def regenerate_reports_tool():
 
             st.markdown("---")
 
+            timestamp = st.session_state.regenerated_data.get('timestamp', datetime.now().strftime("%Y%m%d"))
+
             # Combined download option (recommended)
             st.subheader("📦 Complete Package Download")
             st.markdown("**Recommended:** Download everything in one convenient package")
@@ -465,7 +464,7 @@ def regenerate_reports_tool():
                 st.download_button(
                     label="🎁 Download Complete Package (All Files + Reports)",
                     data=st.session_state.regenerated_data['combined_zip_buffer'].getvalue(),
-                    file_name="Brand_Assets_Complete_Package.zip",
+                    file_name=f"Brand_Assets_Complete_Package_{timestamp}.zip",
                     mime="application/zip",
                     type="primary"
                 )
@@ -483,7 +482,7 @@ def regenerate_reports_tool():
                     st.download_button(
                         label="📄 PDF Report",
                         data=st.session_state.regenerated_data['pdf_buffer'].getvalue(),
-                        file_name="Brand_Assets_Report.pdf",
+                        file_name=f"Brand_Assets_Report_update_{timestamp}.pdf",
                         mime="application/pdf"
                     )
                 else:
@@ -496,7 +495,7 @@ def regenerate_reports_tool():
                             st.download_button(
                                 label="📊 Excel Report",
                                 data=excel_file.read(),
-                                file_name="Brand_Assets_Overview.xlsx",
+                                file_name=f"Brand_Assets_Overview_update_{timestamp}.xlsx",
                                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                             )
                     except:
@@ -507,7 +506,7 @@ def regenerate_reports_tool():
                     st.download_button(
                         label="📦 Processed Files",
                         data=st.session_state.regenerated_data['zip_buffer'].getvalue(),
-                        file_name="Brand_Assets_Processed.zip",
+                        file_name=f"Brand_Assets_Processed_{timestamp}.zip",
                         mime="application/zip"
                     )
 
@@ -524,32 +523,46 @@ def regenerate_reports_tool():
 
         with st.expander("📖 Instructions"):
             st.markdown("""
-            **What is Tab 8?**
+            **What is Tab 6 (Re Run Matrix)?**
 
-            Tab 8 regenerates PDF and Excel reports from a Tab 5 output folder that may contain manually added images.
+            This tool regenerates PDF and Excel reports from a Tab 5 output folder that may contain manually added images.
 
             **Use Case:**
-            1. You ran Tab 5 and got an output folder with images, PDF, and Excel
+            1. You ran Tab 5 and got an output folder with images, PDF, and Excel reports
             2. You manually added new images to that folder (following the same naming convention)
             3. You want to regenerate the reports to include the new images
 
             **How to use:**
-            1. Take your Tab 5 output folder (with any manually added images)
-            2. ZIP the entire folder
-            3. Upload the ZIP here
-            4. Click "Regenerate Reports"
-            5. Download the new PDF and Excel files
+            1. Take your Tab 5 output folder (the one with processed_files/ and reports/ folders)
+            2. **Important:** Make sure BOTH the PDF and Excel reports are included in the ZIP
+            3. Add any new images you want (following the naming convention)
+            4. ZIP the entire folder
+            5. Upload the ZIP here
+            6. Click "Regenerate Reports"
+            7. Download the updated reports (with today's date in the filename)
 
-            **Naming Convention:**
+            **Naming Convention for New Files:**
             All files must follow this pattern: `{markennummer}B{blocknummer}{marke}{count_str}{cleaned}{ext}`
 
             Example: `01B01brand01filename.png`
-            - `01` = brand number
+            - `01` = brand number (markennummer)
             - `B01` = block/folder number
             - `brand` = brand name
             - `01` = sequential counter
             - `filename` = cleaned name
             - `.png` = file extension
 
-            **Note:** The tool will skip any existing Excel/PDF reports in the folder and only regenerate new ones.
+            **Important Notes:**
+            - The tool preserves any manual folder structure changes you made in the Excel file
+            - Files with the same name but different extensions (e.g., .mp4 and .png) are counted only once
+            - Both formats will appear in the reports, but the count remains accurate
+            - Report files are automatically named with the current date (YYYYMMDD format)
+            - The tool will skip any existing report files when processing
+
+            **Multiple File Formats:**
+            If you have files like:
+            - `01B17nivea47appvideo.mp4`
+            - `01B17nivea47appvideo.png`
+
+            Both will be included in the reports, but counted as 1 asset (not 2) in the summary statistics.
             """)
