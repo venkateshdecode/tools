@@ -12,7 +12,8 @@ from helper import (
     generate_excel_report,
     generate_filename_based_pdf_report_with_extensions,
     ALL_ALLOWED_EXTENSIONS,
-    is_valid_file
+    is_valid_file,
+    ALLOWED_IMAGE_EXTENSIONS
 )
 
 
@@ -63,19 +64,43 @@ def get_base_filename_without_ext(filename):
     return Path(filename).stem
 
 
+def get_original_folder_name(blocknummer, processed_files_folder):
+    """Try to find the original folder name from Excel or folder structure"""
+    # Look for the Excel file to extract original folder names
+    excel_files = list(Path(processed_files_folder).glob("*IcAt*Overview*.xlsx"))
+    
+    if excel_files:
+        try:
+            import pandas as pd
+            df = pd.read_excel(excel_files[0], sheet_name='Reordered')
+            # Find rows matching this blocknummer
+            matching_rows = df[df['Group'].astype(str) == blocknummer.lstrip('0')]
+            if not matching_rows.empty:
+                # Get the factorgroup value which contains the original folder name
+                factorgroup = str(matching_rows.iloc[0]['factor'])
+                # Extract folder name (remove blocknummer prefix if present)
+                folder_name = re.sub(r'^\d+', '', factorgroup)
+                return folder_name if folder_name else f"{blocknummer}Folder"
+        except Exception as e:
+            print(f"Could not extract folder name from Excel: {e}")
+    
+    return f"{blocknummer}Folder"
+
+
 def reconstruct_folder_structure(files_folder):
     """
     Reconstruct the folder structure from parsed filenames.
     Groups files by blocknummer (folder) and marke (brand).
-    Handles duplicate base filenames with different extensions.
+    Handles duplicate base filenames - keeps non-image format over image format.
     """
     marken_set = set()
     marken_index = {}
     renamed_files_by_folder_and_marke = defaultdict(lambda: defaultdict(list))
     file_to_factorgroup = {}
+    original_folder_names = {}  # Map blocknummer to original folder name
     
-    # Track unique base filenames for counting
-    unique_base_files = defaultdict(set)  # folder -> set of base filenames
+    # Track unique base filenames for counting and duplicate detection
+    unique_base_files = defaultdict(lambda: defaultdict(dict))  # folder -> base_filename -> {ext: file_path}
 
     # Collect all valid files
     parsed_files = []
@@ -106,12 +131,19 @@ def reconstruct_folder_structure(files_folder):
         else:
             skipped_files.append(f"{file_path.name} (doesn't match naming convention)")
 
-    # Build structure
+    # Try to get original folder names
+    for parsed in parsed_files:
+        blocknummer = parsed['blocknummer']
+        if blocknummer not in original_folder_names:
+            original_folder_names[blocknummer] = get_original_folder_name(blocknummer, files_folder)
+
+    # Build structure with duplicate handling
     for parsed in parsed_files:
         marke = parsed['marke']
         markennummer = parsed['markennummer']
         blocknummer = parsed['blocknummer']
         file_path = parsed['file_path']
+        ext = parsed['ext']
 
         # Add to marken_set
         marken_set.add(marke)
@@ -120,27 +152,61 @@ def reconstruct_folder_structure(files_folder):
         if marke not in marken_index:
             marken_index[marke] = markennummer
 
-        # Create folder name
-        folder_name = f"{blocknummer}Folder"
+        # Use original folder name if found, otherwise use blocknummer
+        folder_name = original_folder_names.get(blocknummer, f"{blocknummer}Folder")
 
-        # Track unique base filename for this folder
+        # Track files by base filename for duplicate detection
         base_filename = get_base_filename_without_ext(file_path.name)
-        unique_base_files[folder_name].add(base_filename)
+        
+        # Store file with its extension
+        unique_base_files[folder_name][base_filename][ext] = file_path
 
-        # Add to structure
-        renamed_files_by_folder_and_marke[folder_name][marke].append(
-            (file_path, file_path.name)
-        )
+    # Now process the deduplicated files
+    for folder_name in unique_base_files:
+        for base_filename, extensions_dict in unique_base_files[folder_name].items():
+            # If multiple extensions exist for same base filename
+            if len(extensions_dict) > 1:
+                # Priority: non-image formats over image formats
+                non_image_files = {ext: path for ext, path in extensions_dict.items() 
+                                  if ext not in ALLOWED_IMAGE_EXTENSIONS}
+                
+                if non_image_files:
+                    # Use non-image format(s)
+                    for ext, file_path in non_image_files.items():
+                        parsed = parse_filename(file_path.name)
+                        marke = parsed['marke']
+                        renamed_files_by_folder_and_marke[folder_name][marke].append(
+                            (file_path, file_path.name)
+                        )
+                        file_to_factorgroup[file_path.name] = folder_name
+                else:
+                    # All are images, just pick one (first one)
+                    ext, file_path = list(extensions_dict.items())[0]
+                    parsed = parse_filename(file_path.name)
+                    marke = parsed['marke']
+                    renamed_files_by_folder_and_marke[folder_name][marke].append(
+                        (file_path, file_path.name)
+                    )
+                    file_to_factorgroup[file_path.name] = folder_name
+            else:
+                # Only one extension, add it
+                ext, file_path = list(extensions_dict.items())[0]
+                parsed = parse_filename(file_path.name)
+                marke = parsed['marke']
+                renamed_files_by_folder_and_marke[folder_name][marke].append(
+                    (file_path, file_path.name)
+                )
+                file_to_factorgroup[file_path.name] = folder_name
 
-        # Map file to factorgroup
-        file_to_factorgroup[file_path.name] = folder_name
+    # Calculate unique counts after deduplication
+    unique_counts = {folder: len(unique_base_files[folder]) for folder in unique_base_files}
 
     # Prepare debug info
     debug_info = {
         'total_files': total_files,
         'parsed_files': len(parsed_files),
         'skipped_files': skipped_files,
-        'unique_counts': {folder: len(bases) for folder, bases in unique_base_files.items()}
+        'unique_counts': unique_counts
     }
 
     return marken_set, renamed_files_by_folder_and_marke, marken_index, file_to_factorgroup, debug_info
@@ -205,7 +271,7 @@ def regenerate_reports_from_folder(files_folder):
     except Exception as e:
         return None, None, f"Error reading existing Excel file: {str(e)}"
 
-    # Reconstruct structure from filenames
+    # Reconstruct structure from filenames (with deduplication)
     marken_set, renamed_files_by_folder_and_marke, marken_index, _, debug_info = reconstruct_folder_structure(files_folder)
 
     if not marken_set:
@@ -233,7 +299,8 @@ def regenerate_reports_from_folder(files_folder):
             # Parse to get blocknummer for new files
             parsed = parse_filename(file_path.name)
             if parsed:
-                folder_name = f"{parsed['blocknummer']}Folder"
+                blocknummer = parsed['blocknummer']
+                folder_name = get_original_folder_name(blocknummer, files_folder)
                 file_to_factorgroup[file_path.name] = folder_name
                 new_files_added += 1
                 print(f"  ✨ NEW: {file_path.name} -> {folder_name}")
@@ -527,6 +594,12 @@ def regenerate_reports_tool():
 
             This tool regenerates PDF and Excel reports from a Tab 5 output folder that may contain manually added images.
 
+            **Key Features:**
+            - **Deduplication**: Files with same name but different extensions (e.g., video.png + video.mp4) are counted only ONCE
+            - **Priority**: Non-image formats (mp4, mov, gif, etc.) take priority over image formats when duplicates exist
+            - **Highlighting**: Non-image formats are highlighted in yellow in the Excel output
+            - **Original Folder Names**: Preserves actual folder names from your input, not just "17Folder"
+
             **Use Case:**
             1. You ran Tab 5 and got an output folder with images, PDF, and Excel reports
             2. You manually added new images to that folder (following the same naming convention)
@@ -554,15 +627,10 @@ def regenerate_reports_tool():
 
             **Important Notes:**
             - The tool preserves any manual folder structure changes you made in the Excel file
-            - Files with the same name but different extensions (e.g., .mp4 and .png) are counted only once
-            - Both formats will appear in the reports, but the count remains accurate
+            - Files with the same name but different extensions are handled intelligently:
+              - Non-image formats (mp4, mov, gif, etc.) take priority over images
+              - Only ONE file is counted and displayed (no duplicates)
+              - Non-image formats are highlighted in yellow in the Excel
             - Report files are automatically named with the current date (YYYYMMDD format)
             - The tool will skip any existing report files when processing
-
-            **Multiple File Formats:**
-            If you have files like:
-            - `01B17nivea47appvideo.mp4`
-            - `01B17nivea47appvideo.png`
-
-            Both will be included in the reports, but counted as 1 asset (not 2) in the summary statistics.
             """)

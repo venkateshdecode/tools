@@ -27,7 +27,10 @@ ALLOWED_ARCHIVE_EXTENSIONS = {'.zip', '.rar', '.7z', '.tar', '.gz', '.bz2', '.xz
 ALLOWED_CODE_EXTENSIONS = {'.py', '.js', '.html', '.css', '.java', '.cpp', '.c', '.h', '.php', '.rb', '.go', '.rs', '.swift', '.kt'}
 ALLOWED_DATA_EXTENSIONS = {'.json', '.xml', '.yaml', '.yml', '.sql', '.db', '.sqlite', '.xlsx', '.xls'}
 ALLOWED_OTHER_EXTENSIONS = {'.psd', '.ai', '.sketch', '.fig', '.eps', '.indd', '.dwg', '.stl', '.obj', '.fbx', '.blend'}
-
+# Non-image extensions (for highlighting)
+NON_IMAGE_EXTENSIONS = (ALLOWED_VIDEO_EXTENSIONS | ALLOWED_AUDIO_EXTENSIONS | 
+                        ALLOWED_TEXT_EXTENSIONS | ALLOWED_ARCHIVE_EXTENSIONS |
+                        ALLOWED_CODE_EXTENSIONS | ALLOWED_DATA_EXTENSIONS | ALLOWED_OTHER_EXTENSIONS)
 # Combine all extensions - if a file has ANY extension or NO extension, process it
 ALL_ALLOWED_EXTENSIONS = (ALLOWED_IMAGE_EXTENSIONS | ALLOWED_TEXT_EXTENSIONS | 
                           ALLOWED_VIDEO_EXTENSIONS | ALLOWED_AUDIO_EXTENSIONS |
@@ -197,20 +200,25 @@ def generate_excel_report(output_folder: Path, marken_index: dict, file_to_facto
                 factorgroup = factorgroup.replace('_', '')  # Remove all underscores
 
                 only_id = name
-                is_text_file = False
                 is_b20_id = False
+                is_non_image_file = False  # INITIALIZE HERE
 
                 if "B20" in only_id.upper():
                     is_b20_id = True
                     language_value = only_id + file_ext
-                elif file_ext == '.txt':
-                    is_text_file = True
-                    try:
-                        with open(file, 'r', encoding='utf-8', errors='ignore') as txt_file:
-                            txt_content = txt_file.read().strip()
-                            language_value = txt_content if txt_content else "[Empty file]"
-                    except Exception as e:
-                        language_value = f"[Error reading file: {str(e)}]"
+                # Highlight ALL non-image formats (not just .txt)
+                elif file_ext in NON_IMAGE_EXTENSIONS:
+                    is_non_image_file = True
+                    if file_ext == '.txt':
+                        try:
+                            with open(file, 'r', encoding='utf-8', errors='ignore') as txt_file:
+                                txt_content = txt_file.read().strip()
+                                language_value = txt_content if txt_content else "[Empty file]"
+                        except Exception as e:
+                            language_value = f"[Error reading file: {str(e)}]"
+                    else:
+                        # For non-image, non-txt files, show the full filename with extension
+                        language_value = name + file_ext
                 else:
                     language_value = name + file_ext
 
@@ -219,9 +227,8 @@ def generate_excel_report(output_folder: Path, marken_index: dict, file_to_facto
                     "factorgroup": factorgroup,
                     "ID": only_id,
                     "Language": language_value,
-                    "highlight_yellow": is_text_file or is_b20_id  
+                    "highlight_yellow": is_non_image_file or is_b20_id  # Highlight non-images
                 })
-
 
     df_assets = pd.DataFrame(data, columns=["factor", "factorgroup", "ID", "Language"])
 
