@@ -590,47 +590,36 @@ def regenerate_reports_tool():
 
         with st.expander("📖 Instructions"):
             st.markdown("""
-            **What is Tab 6 (Re Run Matrix)?**
+**What is Tab 6 (Re Run Matrix)?**
 
-            This tool regenerates PDF and Excel reports from a Tab 5 output folder that may contain manually added images.
+Regenerates PDF and Excel reports from Tab 5 output after you've manually added new files.
 
-            **Key Features:**
-            - **Deduplication**: Files with same name but different extensions (e.g., video.png + video.mp4) are counted only ONCE
-            - **Priority**: Non-image formats (mp4, mov, gif, etc.) take priority over image formats when duplicates exist
-            - **Highlighting**: Non-image formats are highlighted in yellow in the Excel output
-            - **Original Folder Names**: Preserves actual folder names from your input, not just "17Folder"
+**When to use:**
+1. You have Tab 5 output with reports
+2. You manually added new files (following naming convention)
+3. You want updated reports with today's date
 
-            **Use Case:**
-            1. You ran Tab 5 and got an output folder with images, PDF, and Excel reports
-            2. You manually added new images to that folder (following the same naming convention)
-            3. You want to regenerate the reports to include the new images
+**How to use:**
+1. Take your Tab 5 output folder (must include both PDF and Excel reports)
+2. Add any new files following the naming convention
+3. ZIP the entire folder
+4. Upload and click "Regenerate Reports"
+5. Download updated reports
 
-            **How to use:**
-            1. Take your Tab 5 output folder (the one with processed_files/ and reports/ folders)
-            2. **Important:** Make sure BOTH the PDF and Excel reports are included in the ZIP
-            3. Add any new images you want (following the naming convention)
-            4. ZIP the entire folder
-            5. Upload the ZIP here
-            6. Click "Regenerate Reports"
-            7. Download the updated reports (with today's date in the filename)
+**Naming Convention:**
+`{markennummer}B{blocknummer}{marke}{count_str}{cleaned}{ext}`
 
-            **Naming Convention for New Files:**
-            All files must follow this pattern: `{markennummer}B{blocknummer}{marke}{count_str}{cleaned}{ext}`
+Example: `01B01dove01bodylotion.png`
+- `01` = brand number
+- `B01` = block/folder number  
+- `dove` = brand name
+- `01` = sequential counter
+- `bodylotion` = cleaned name
+- `.png` = file extension
 
-            Example: `01B01brand01filename.png`
-            - `01` = brand number (markennummer)
-            - `B01` = block/folder number
-            - `brand` = brand name
-            - `01` = sequential counter
-            - `filename` = cleaned name
-            - `.png` = file extension
-
-            **Important Notes:**
-            - The tool preserves any manual folder structure changes you made in the Excel file
-            - Files with the same name but different extensions are handled intelligently:
-              - Non-image formats (mp4, mov, gif, etc.) take priority over images
-              - Only ONE file is counted and displayed (no duplicates)
-              - Non-image formats are highlighted in yellow in the Excel
-            - Report files are automatically named with the current date (YYYYMMDD format)
-            - The tool will skip any existing report files when processing
-            """)
+**Key Features:**
+- **Deduplication**: Same filename with different extensions counted only once
+- **Priority**: Non-image formats (mp4, mov, gif, txt) prioritized over images
+- **Highlighting**: Non-image formats highlighted in yellow in Excel
+- **Preserves**: Manual folder structure changes from Excel file
+""")
