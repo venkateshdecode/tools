@@ -1,12 +1,15 @@
 import streamlit as st
+
+# Import tools for each tab
 from tab1 import excel_extractor_tool
 from tab2 import file_renamer_tool
 from tab3 import white_to_transparent_tool
 from tab4 import pdf_generator_tool
 from tab5 import brand_renamer_tool
-from tab6 import resize_with_transparent_canvas_tool
+from tab6 import updated_file_processor_tab 
 from tab7 import center_on_canvas_tool
-from tab8 import regenerate_reports_tool
+from tab8 import resize_with_transparent_canvas_tool 
+
 
 # Configure Streamlit page
 st.set_page_config(
@@ -28,7 +31,7 @@ def main():
         "Re-run Matrix",
         "Resize",
         "Place on Canvas"
-        
+
     ])
 
     with tab1:
@@ -42,7 +45,7 @@ def main():
     with tab5:
          brand_renamer_tool()
     with tab6:
-        regenerate_reports_tool()
+        updated_file_processor_tab() 
     with tab7:
         center_on_canvas_tool()
     with tab8:

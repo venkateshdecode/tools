@@ -180,55 +180,66 @@ def is_valid_file(file_path):
     return True
 
 def generate_excel_report(output_folder: Path, marken_index: dict, file_to_factorgroup: dict):
-    """Generate Excel report - ACCEPT ALL FILE TYPES"""
+    """Generate Excel report - ACCEPT ALL FILE TYPES
+
+    ⚠️ CRITICAL: Only processes files that are in file_to_factorgroup parameter.
+    This ensures we only generate Excel entries for files we want to include.
+    """
     final_excel_path = output_folder / "IcAt_Overview_Final.xlsx"
 
     nummer_zu_marke = {v: k for k, v in marken_index.items()}
     data = []
 
-    for file in sorted(output_folder.iterdir()):
-        if file.is_file() and is_valid_file(file):
-            name = file.stem
-            file_ext = file.suffix.lower() if file.suffix else ''
+    # ⚠️ CRITICAL FIX: Iterate over file_to_factorgroup keys instead of scanning folder
+    # This ensures we ONLY process the files we explicitly want to include
+    for filename in sorted(file_to_factorgroup.keys()):
+        file = output_folder / filename
 
-            match = re.match(r"(\d{2})B(\d{2})([a-z0-9]+)", name, re.IGNORECASE)
-            if match:
-                markennummer, blocknummer, marke = match.groups()
-                factor = nummer_zu_marke.get(markennummer, marke)
+        # Skip if file doesn't exist or isn't valid
+        if not file.exists() or not file.is_file() or not is_valid_file(file):
+            continue
 
-                factorgroup = file_to_factorgroup.get(file.name, f"{blocknummer}Unknown")
-                factorgroup = factorgroup.replace('_', '')  # Remove all underscores
+        name = file.stem
+        file_ext = file.suffix.lower() if file.suffix else ''
 
-                only_id = name
-                is_b20_id = False
-                is_non_image_file = False  # INITIALIZE HERE
+        match = re.match(r"(\d{2})B(\d{2})([a-z0-9]+)", name, re.IGNORECASE)
+        if match:
+            markennummer, blocknummer, marke = match.groups()
+            factor = nummer_zu_marke.get(markennummer, marke)
 
-                if "B20" in only_id.upper():
-                    is_b20_id = True
-                    language_value = only_id + file_ext
-                # Highlight ALL non-image formats (not just .txt)
-                elif file_ext in NON_IMAGE_EXTENSIONS:
-                    is_non_image_file = True
-                    if file_ext == '.txt':
-                        try:
-                            with open(file, 'r', encoding='utf-8', errors='ignore') as txt_file:
-                                txt_content = txt_file.read().strip()
-                                language_value = txt_content if txt_content else "[Empty file]"
-                        except Exception as e:
-                            language_value = f"[Error reading file: {str(e)}]"
-                    else:
-                        # For non-image, non-txt files, show the full filename with extension
-                        language_value = name + file_ext
+            factorgroup = file_to_factorgroup.get(file.name, f"{blocknummer}Unknown")
+            factorgroup = factorgroup.replace('_', '')  # Remove all underscores
+
+            only_id = name
+            is_b20_id = False
+            is_non_image_file = False  # INITIALIZE HERE
+
+            if "B20" in only_id.upper():
+                is_b20_id = True
+                language_value = only_id + file_ext
+            # Highlight ALL non-image formats (not just .txt)
+            elif file_ext in NON_IMAGE_EXTENSIONS:
+                is_non_image_file = True
+                if file_ext == '.txt':
+                    try:
+                        with open(file, 'r', encoding='utf-8', errors='ignore') as txt_file:
+                            txt_content = txt_file.read().strip()
+                            language_value = txt_content if txt_content else "[Empty file]"
+                    except Exception as e:
+                        language_value = f"[Error reading file: {str(e)}]"
                 else:
+                    # For non-image, non-txt files, show the full filename with extension
                     language_value = name + file_ext
+            else:
+                language_value = name + file_ext
 
-                data.append({
-                    "factor": factor,
-                    "factorgroup": factorgroup,
-                    "ID": only_id,
-                    "Language": language_value,
-                    "highlight_yellow": is_non_image_file or is_b20_id  # Highlight non-images
-                })
+            data.append({
+                "factor": factor,
+                "factorgroup": factorgroup,
+                "ID": only_id,
+                "Language": language_value,
+                "highlight_yellow": is_non_image_file or is_b20_id  # Highlight non-images
+            })
 
     df_assets = pd.DataFrame(data, columns=["factor", "factorgroup", "ID", "Language"])
 
@@ -354,7 +365,7 @@ def add_brand_pages_with_png_extensions(elements, marken_spalten, renamed_files_
 def generate_filename_based_pdf_report_with_extensions(input_folder, erste_marke=None, marken_index=None):
     """Generate PDF report with .png extensions in image labels"""
     marken_set, renamed_files_by_folder_and_marke, all_files = analyze_files_by_filename(input_folder)
-    
+
     if not marken_set:
         return None, "No brands found in filenames."
 
@@ -381,15 +392,36 @@ def generate_filename_based_pdf_report_with_extensions(input_folder, erste_marke
     nummer_zu_marke = {v: k for k, v in marken_index.items()}
     marken_spalten = sorted(nummer_zu_marke.items())
 
-    for folder in sorted(renamed_files_by_folder_and_marke):
+    # Sort folders naturally by blocknummer
+    def get_folder_sort_key(folder_name):
+        # Extract leading digits for natural sorting
+        match = re.match(r'^(\d+)', folder_name)
+        return int(match.group(1)) if match else 999
+
+    sorted_folders = sorted(renamed_files_by_folder_and_marke.keys(), key=get_folder_sort_key)
+
+    for folder in sorted_folders:
         elements.append(Paragraph(f"<b>Folder: {folder}</b>", styles['Heading2']))
 
         abschnitt = renamed_files_by_folder_and_marke[folder]
-        total = 0
+
+        # Count UNIQUE base files per brand (considering deduplication)
+        brand_counts = {}
+        for nummer, marke in marken_spalten:
+            files = abschnitt.get(marke, [])
+            # Group by base filename (without extension) to count unique files
+            unique_bases = {}
+            for pfad, original_name in files:
+                base_name = Path(original_name).stem
+                if base_name not in unique_bases:
+                    unique_bases[base_name] = []
+                unique_bases[base_name].append(Path(original_name).suffix.lower())
+            brand_counts[marke] = len(unique_bases)
+
+        total = sum(brand_counts.values())
         lines = []
         for nummer, marke in marken_spalten:
-            count = len(abschnitt.get(marke, []))
-            total += count
+            count = brand_counts.get(marke, 0)
             lines.append(f"{nummer} ({marke}): {count}")
         lines.append(f"Total: {total}")
         elements.append(Paragraph("<br/>".join(lines), styles['Normal']))

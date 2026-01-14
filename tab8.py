@@ -1,625 +1,180 @@
 import io
 import os
-import re
-import shutil
 import zipfile
-from pathlib import Path
-from collections import defaultdict
-from datetime import datetime
 import streamlit as st
-from helper import (
-    extract_zip_to_temp,
-    generate_excel_report,
-    generate_filename_based_pdf_report_with_extensions,
-    ALL_ALLOWED_EXTENSIONS,
-    is_valid_file,
-    ALLOWED_IMAGE_EXTENSIONS
-)
+from PIL import Image as PILImage
+
+from helper import extract_zip_to_temp
+
+ALLOWED_IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.bmp', '.gif', '.tiff', '.webp'}
+ALLOWED_TEXT_EXTENSIONS = {'.txt', '.md', '.csv'}
+ALLOWED_VIDEO_EXTENSIONS = {'.mp4', '.avi', '.mov', '.wmv', '.flv', '.mkv', '.webm', '.m4v', '.3gp', '.ogv'}
+ALLOWED_AUDIO_EXTENSIONS = {'.mp3', '.wav', '.aac', '.flac', '.ogg', '.m4a', '.wma'}
+ALL_ALLOWED_EXTENSIONS = ALLOWED_IMAGE_EXTENSIONS.union(ALLOWED_TEXT_EXTENSIONS).union(ALLOWED_VIDEO_EXTENSIONS).union(ALLOWED_AUDIO_EXTENSIONS)
 
 
-def parse_filename(filename):
-    """
-    Parse filename following Tab 5 naming convention:
-    {markennummer}B{blocknummer}{marke}{count_str}{cleaned}{original_ext}
-
-    Returns: (markennummer, blocknummer, marke, count_str, cleaned, ext) or None if invalid
-    """
-    stem = Path(filename).stem
-    ext = Path(filename).suffix.lower()
-
-    # Pattern: 2 digits + B + 2 digits + brand name (letters only) + 2 digits + rest
-    match = re.match(r'^(\d{2})B(\d{2})([a-zA-Z]+)(\d{2})(.*)$', stem)
-
-    if match:
-        markennummer, blocknummer, marke, count_str, cleaned = match.groups()
-        return {
-            'markennummer': markennummer,
-            'blocknummer': blocknummer,
-            'marke': marke.lower(),
-            'count_str': count_str,
-            'cleaned': cleaned,
-            'ext': ext,
-            'full_filename': filename
-        }
-
-    # Fallback: Try more flexible pattern if brand contains numbers
-    match = re.match(r'^(\d{2})B(\d{2})([a-z0-9]+?)(\d{2})(.*)$', stem, re.IGNORECASE)
-    if match:
-        markennummer, blocknummer, marke, count_str, cleaned = match.groups()
-        return {
-            'markennummer': markennummer,
-            'blocknummer': blocknummer,
-            'marke': marke.lower(),
-            'count_str': count_str,
-            'cleaned': cleaned,
-            'ext': ext,
-            'full_filename': filename
-        }
-
-    return None
-
-
-def get_base_filename_without_ext(filename):
-    """Get base filename without extension for duplicate detection"""
-    return Path(filename).stem
-
-
-def get_original_folder_name(blocknummer, processed_files_folder):
-    """Try to find the original folder name from Excel or folder structure"""
-    # Look for the Excel file to extract original folder names
-    excel_files = list(Path(processed_files_folder).glob("*IcAt*Overview*.xlsx"))
+def resize_with_transparent_canvas_tool():
+    st.header("Resize with Transparent Canvas")
+    st.markdown("Resize images to 400px on the largest side while maintaining aspect ratio on transparent background.")
     
-    if excel_files:
-        try:
-            import pandas as pd
-            df = pd.read_excel(excel_files[0], sheet_name='Reordered')
-            # Find rows matching this blocknummer
-            matching_rows = df[df['Group'].astype(str) == blocknummer.lstrip('0')]
-            if not matching_rows.empty:
-                # Get the factorgroup value which contains the original folder name
-                factorgroup = str(matching_rows.iloc[0]['factor'])
-                # Extract folder name (remove blocknummer prefix if present)
-                folder_name = re.sub(r'^\d+', '', factorgroup)
-                return folder_name if folder_name else f"{blocknummer}Folder"
-        except Exception as e:
-            print(f"Could not extract folder name from Excel: {e}")
-    
-    return f"{blocknummer}Folder"
-
-
-def reconstruct_folder_structure(files_folder):
-    """
-    Reconstruct the folder structure from parsed filenames.
-    Groups files by blocknummer (folder) and marke (brand).
-    Handles duplicate base filenames - keeps non-image format over image format.
-    """
-    marken_set = set()
-    marken_index = {}
-    renamed_files_by_folder_and_marke = defaultdict(lambda: defaultdict(list))
-    file_to_factorgroup = {}
-    original_folder_names = {}  # Map blocknummer to original folder name
-    
-    # Track unique base filenames for counting and duplicate detection
-    unique_base_files = defaultdict(lambda: defaultdict(dict))  # folder -> base_filename -> {ext: file_path}
-
-    # Collect all valid files
-    parsed_files = []
-    skipped_files = []
-    total_files = 0
-
-    for file_path in sorted(Path(files_folder).iterdir()):
-        if not file_path.is_file():
-            continue
-
-        total_files += 1
-
-        if not is_valid_file(file_path):
-            skipped_files.append(f"{file_path.name} (invalid/system file)")
-            continue
-
-        # Skip Excel and PDF files from previous runs
-        if file_path.suffix.lower() in ['.xlsx', '.pdf']:
-            if any(keyword in file_path.name for keyword in ['Overview', 'Report', 'IcAt']):
-                skipped_files.append(f"{file_path.name} (report file)")
-                continue
-
-        # Parse filename
-        parsed = parse_filename(file_path.name)
-        if parsed:
-            parsed['file_path'] = file_path
-            parsed_files.append(parsed)
-        else:
-            skipped_files.append(f"{file_path.name} (doesn't match naming convention)")
-
-    # Try to get original folder names
-    for parsed in parsed_files:
-        blocknummer = parsed['blocknummer']
-        if blocknummer not in original_folder_names:
-            original_folder_names[blocknummer] = get_original_folder_name(blocknummer, files_folder)
-
-    # Build structure with duplicate handling
-    for parsed in parsed_files:
-        marke = parsed['marke']
-        markennummer = parsed['markennummer']
-        blocknummer = parsed['blocknummer']
-        file_path = parsed['file_path']
-        ext = parsed['ext']
-
-        # Add to marken_set
-        marken_set.add(marke)
-
-        # Add to marken_index (use first occurrence)
-        if marke not in marken_index:
-            marken_index[marke] = markennummer
-
-        # Use original folder name if found, otherwise use blocknummer
-        folder_name = original_folder_names.get(blocknummer, f"{blocknummer}Folder")
-
-        # Track files by base filename for duplicate detection
-        base_filename = get_base_filename_without_ext(file_path.name)
-        
-        # Store file with its extension
-        unique_base_files[folder_name][base_filename][ext] = file_path
-
-    # Now process the deduplicated files
-    for folder_name in unique_base_files:
-        for base_filename, extensions_dict in unique_base_files[folder_name].items():
-            # If multiple extensions exist for same base filename
-            if len(extensions_dict) > 1:
-                # Priority: non-image formats over image formats
-                non_image_files = {ext: path for ext, path in extensions_dict.items() 
-                                  if ext not in ALLOWED_IMAGE_EXTENSIONS}
-                
-                if non_image_files:
-                    # Use non-image format(s)
-                    for ext, file_path in non_image_files.items():
-                        parsed = parse_filename(file_path.name)
-                        marke = parsed['marke']
-                        renamed_files_by_folder_and_marke[folder_name][marke].append(
-                            (file_path, file_path.name)
-                        )
-                        file_to_factorgroup[file_path.name] = folder_name
-                else:
-                    # All are images, just pick one (first one)
-                    ext, file_path = list(extensions_dict.items())[0]
-                    parsed = parse_filename(file_path.name)
-                    marke = parsed['marke']
-                    renamed_files_by_folder_and_marke[folder_name][marke].append(
-                        (file_path, file_path.name)
-                    )
-                    file_to_factorgroup[file_path.name] = folder_name
-            else:
-                # Only one extension, add it
-                ext, file_path = list(extensions_dict.items())[0]
-                parsed = parse_filename(file_path.name)
-                marke = parsed['marke']
-                renamed_files_by_folder_and_marke[folder_name][marke].append(
-                    (file_path, file_path.name)
-                )
-                file_to_factorgroup[file_path.name] = folder_name
-
-    # Calculate unique counts after deduplication
-    unique_counts = {folder: len(unique_base_files[folder]) for folder in unique_base_files}
-
-    # Prepare debug info
-    debug_info = {
-        'total_files': total_files,
-        'parsed_files': len(parsed_files),
-        'skipped_files': skipped_files,
-        'unique_counts': unique_counts
-    }
-
-    return marken_set, renamed_files_by_folder_and_marke, marken_index, file_to_factorgroup, debug_info
-
-
-def find_existing_reports(files_folder):
-    """Find existing PDF and Excel reports in the folder"""
-    pdf_file = None
-    excel_file = None
-    
-    for file in Path(files_folder).iterdir():
-        if not file.is_file():
-            continue
-            
-        # Look for Excel file
-        if file.suffix.lower() == '.xlsx' and 'IcAt' in file.name and 'Overview' in file.name:
-            excel_file = file
-            
-        # Look for PDF file
-        if file.suffix.lower() == '.pdf' and ('Brand' in file.name or 'Report' in file.name or 'IcAt' in file.name):
-            pdf_file = file
-    
-    return pdf_file, excel_file
-
-
-def regenerate_reports_from_folder(files_folder):
-    """
-    Regenerate PDF and Excel reports from a folder containing Tab 5 output files.
-    Uses the EXISTING Excel file to get the correct factorgroup mappings!
-    Preserves manual folder structure changes from the Excel file.
-    """
-    import pandas as pd
-
-    # Find existing reports (flexible naming)
-    old_pdf_file, existing_excel = find_existing_reports(files_folder)
-    
-    if not existing_excel or not existing_excel.exists():
-        return None, None, "Error: Excel overview file not found in the folder. Please ensure the Excel file from Tab 5 is included in the ZIP."
-
-    # Read existing Excel to get the file_to_factorgroup mapping
-    try:
-        df = pd.read_excel(existing_excel, sheet_name='Assets')
-        print(f"✅ Excel has {len(df)} rows")
-
-        # Build file_to_factorgroup from the Excel
-        file_to_factorgroup = {}
-        for idx, row in df.iterrows():
-            lang_val = str(row['Language'])
-            factorgroup = str(row['factorgroup'])
-
-            # Check if Language looks like a filename (has an extension)
-            if '.' in lang_val and not lang_val.startswith('['):
-                filename = lang_val
-                file_to_factorgroup[filename] = factorgroup
-
-                if idx < 5:
-                    print(f"  Row {idx}: '{filename}' -> {factorgroup}")
-            elif idx < 5:
-                print(f"  Row {idx}: Skipping (text content): '{lang_val[:30]}...'")
-
-        print(f"✅ Loaded {len(file_to_factorgroup)} file mappings from existing Excel")
-    except Exception as e:
-        return None, None, f"Error reading existing Excel file: {str(e)}"
-
-    # Reconstruct structure from filenames (with deduplication)
-    marken_set, renamed_files_by_folder_and_marke, marken_index, _, debug_info = reconstruct_folder_structure(files_folder)
-
-    if not marken_set:
-        error_msg = f"No valid files found matching the naming convention.\n\n"
-        error_msg += f"Total files found: {debug_info['total_files']}\n"
-        error_msg += f"Successfully parsed: {debug_info['parsed_files']}\n"
-        if debug_info['skipped_files']:
-            error_msg += f"\nSkipped files:\n"
-            for skipped in debug_info['skipped_files'][:10]:
-                error_msg += f"  - {skipped}\n"
-            if len(debug_info['skipped_files']) > 10:
-                error_msg += f"  ... and {len(debug_info['skipped_files']) - 10} more\n"
-        return None, None, error_msg
-
-    # Add any NEW files to file_to_factorgroup
-    new_files_added = 0
-    print(f"\n🔍 Scanning folder for NEW files not in existing Excel...")
-    for file_path in Path(files_folder).iterdir():
-        if file_path.is_file() and file_path.name not in file_to_factorgroup:
-            # Skip Excel/PDF files
-            if file_path.suffix.lower() in ['.xlsx', '.pdf']:
-                if any(keyword in file_path.name for keyword in ['Overview', 'Report', 'IcAt']):
-                    continue
-
-            # Parse to get blocknummer for new files
-            parsed = parse_filename(file_path.name)
-            if parsed:
-                blocknummer = parsed['blocknummer']
-                folder_name = get_original_folder_name(blocknummer, files_folder)
-                file_to_factorgroup[file_path.name] = folder_name
-                new_files_added += 1
-                print(f"  ✨ NEW: {file_path.name} -> {folder_name}")
-
-    if new_files_added == 0:
-        print(f"  ℹ️  No new files found - all files already in Excel")
-
-    print(f"\n📊 Summary:")
-    print(f"  - Files from existing Excel: {len(file_to_factorgroup) - new_files_added}")
-    print(f"  - NEW files added: {new_files_added}")
-    print(f"  - Total files to process: {len(file_to_factorgroup)}")
-
-    # Create a temporary input folder structure that matches Tab 5 expectations
-    temp_input = Path(files_folder) / "_temp_input_structure"
-    temp_input.mkdir(exist_ok=True)
-
-    try:
-        # Create subfolder structure for PDF generation
-        for folder_name in renamed_files_by_folder_and_marke:
-            folder_path = temp_input / folder_name
-            folder_path.mkdir(exist_ok=True)
-
-            # Copy files to appropriate subfolders
-            for marke, files in renamed_files_by_folder_and_marke[folder_name].items():
-                for file_path, _ in files:
-                    shutil.copy2(file_path, folder_path / file_path.name)
-
-        # Generate PDF using existing helper function
-        pdf_buffer, pdf_error = generate_filename_based_pdf_report_with_extensions(
-            temp_input,
-            erste_marke=None,
-            marken_index=marken_index
-        )
-
-        if pdf_error:
-            return None, None, f"PDF generation failed: {pdf_error}"
-
-        # Backup the old Excel file before deleting
-        backup_excel_path = Path(files_folder) / f"{existing_excel.stem}.backup"
-        if existing_excel.exists():
-            shutil.copy2(existing_excel, backup_excel_path)
-            existing_excel.unlink()
-
-        # Generate Excel using existing helper function
-        print(f"\n📝 Generating Excel report...")
-        print(f"  Passing {len(file_to_factorgroup)} file mappings to generate_excel_report")
-
-        excel_path = generate_excel_report(
-            Path(files_folder),
-            marken_index,
-            file_to_factorgroup
-        )
-
-        # Debug: Check how many entries were added
-        try:
-            df_new = pd.read_excel(excel_path, sheet_name='Assets')
-            print(f"\n✅ Excel generated with {len(df_new)} rows")
-        except Exception as e:
-            print(f"Could not read Excel for debug: {e}")
-
-        return pdf_buffer, excel_path, None
-
-    finally:
-        # Clean up temp folder
-        if temp_input.exists():
-            shutil.rmtree(temp_input)
-
-
-def regenerate_reports_tool():
-    """Tab 6: Regenerate PDF and Excel from Tab 5 output + manually added images"""
-    st.header("Re Run Matrix")
-    st.markdown("""
-    Upload a ZIP containing your Tab 5 output folder (with optional manually added images).
-
-    The tool will regenerate updated reports with the current date stamp.
-    """)
-
-    # Initialize session state
-    if 'regeneration_complete' not in st.session_state:
-        st.session_state.regeneration_complete = False
-    if 'regenerated_data' not in st.session_state:
-        st.session_state.regenerated_data = {}
-
+    # File upload with unique key
     uploaded_file = st.file_uploader(
-        "Choose a ZIP file containing Tab 5 output (including both PDF and Excel reports)",
+        "Choose a ZIP file with images",
         type=['zip'],
+        help="Upload a zip file containing images to resize.",
+        key="resize_transparent_upload"
     )
-
-    # Reset processing state when new file is uploaded
-    if uploaded_file and 'uploaded_file_name_tab6' in st.session_state:
-        if st.session_state.uploaded_file_name_tab6 != uploaded_file.name:
-            st.session_state.regeneration_complete = False
-            st.session_state.regenerated_data = {}
-
+    
     if uploaded_file:
-        st.session_state.uploaded_file_name_tab6 = uploaded_file.name
-
-        if not st.session_state.regeneration_complete:
-            if st.button("Regenerate Reports", type="primary"):
-                with st.spinner("Extracting files and analyzing structure..."):
-                    # Extract ZIP
+        # Show the fixed resize setting
+        st.info("Images will be resized to 400px on the largest side (width or height), maintaining aspect ratio.")
+        
+        # Process button with unique key
+        if st.button("Process Images", type="primary", key="process_resize_transparent_images"):
+            try:
+                # Extract zip file
+                with st.spinner("Extracting zip file..."):
                     temp_dir = extract_zip_to_temp(uploaded_file)
-
-                    # Find the actual files folder
-                    root_folder = Path(temp_dir)
-
-                    # Keep descending if there's only one subfolder
-                    while True:
-                        items = [item for item in os.listdir(root_folder) if not item.startswith('.') and not item.startswith('_')]
-
-                        if len(items) == 1 and os.path.isdir(os.path.join(root_folder, items[0])):
-                            root_folder = root_folder / items[0]
-                        else:
-                            break
-
-                    # Look for processed_files folder
-                    processed_files_folder = root_folder / "processed_files"
-                    if not processed_files_folder.exists():
-                        processed_files_folder = root_folder
-
-                    # Regenerate reports
-                    with st.spinner("Regenerating PDF and Excel reports..."):
-                        pdf_buffer, excel_path, error = regenerate_reports_from_folder(processed_files_folder)
-
-                    if error:
-                        st.error(error)
-                        shutil.rmtree(temp_dir)
-                        return
-
-                    # Show Excel statistics
-                    if excel_path and excel_path.exists():
-                        import pandas as pd
-                        try:
-                            df_new = pd.read_excel(excel_path, sheet_name='Assets')
-
-                            # Compare with backup
-                            backup_files = list(processed_files_folder.glob("*.backup"))
-                            if backup_files:
-                                try:
-                                    df_old = pd.read_excel(backup_files[0], sheet_name='Assets')
-                                    old_count = len(df_old)
-                                    new_count = len(df_new)
-                                    added_count = new_count - old_count
-
-                                    if added_count > 0:
-                                        st.success(f"✅ Excel generated with {new_count} entries ({added_count} NEW entries added!)")
-                                    else:
-                                        st.success(f"✅ Excel generated with {new_count} entries (same as before)")
-                                except:
-                                    st.success(f"✅ Excel generated with {len(df_new)} entries")
+                    input_folder = temp_dir
+                    items = os.listdir(temp_dir)
+                    if len(items) == 1 and os.path.isdir(os.path.join(temp_dir, items[0])):
+                        input_folder = os.path.join(temp_dir, items[0])
+                
+                # Create output folder
+                output_folder = os.path.join(temp_dir, "resized_transparent_output")
+                os.makedirs(output_folder, exist_ok=True)
+                
+                # Process images
+                processed_count = 0
+                error_count = 0
+                progress_bar = st.progress(0)
+                status_text = st.empty()
+                
+                all_files = []
+                for root, dirs, files in os.walk(input_folder):
+                    for file in files:
+                        ext = os.path.splitext(file)[1].lower()
+                        if ext in ALLOWED_IMAGE_EXTENSIONS:
+                            all_files.append(os.path.join(root, file))
+                
+                total_files = len(all_files)
+                
+                for i, file_path in enumerate(all_files):
+                    status_text.text(f"Processing {i+1}/{total_files}: {os.path.basename(file_path)}...")
+                    progress_bar.progress((i + 1) / total_files)
+                    
+                    try:
+                        relative_path = os.path.relpath(file_path, input_folder)
+                        new_path = os.path.join(output_folder, os.path.splitext(relative_path)[0] + ".png")
+                        os.makedirs(os.path.dirname(new_path), exist_ok=True)
+                        
+                        with PILImage.open(file_path) as img:
+                            img = img.convert("RGBA")
+                            orig_w, orig_h = img.size
+                            
+                            # Calculate scaling factor based on largest side
+                            max_dimension = 400
+                            if orig_w >= orig_h:
+                                # Width is larger or equal
+                                scale_factor = max_dimension / orig_w
+                                new_w = max_dimension
+                                new_h = int(orig_h * scale_factor)
                             else:
-                                st.success(f"✅ Excel generated with {len(df_new)} entries")
-
-                        except Exception as e:
-                            st.warning(f"Excel created but couldn't read for stats: {e}")
-
-                    # Generate timestamp for filenames
-                    timestamp = datetime.now().strftime("%Y%m%d")
-
-                    # Create individual processed files ZIP
+                                # Height is larger
+                                scale_factor = max_dimension / orig_h
+                                new_h = max_dimension
+                                new_w = int(orig_w * scale_factor)
+                            
+                            # Resize image while maintaining aspect ratio
+                            img_resized = img.resize((new_w, new_h), PILImage.LANCZOS)
+                            
+                            # Create transparent canvas with the exact resized dimensions
+                            canvas = PILImage.new("RGBA", (new_w, new_h), (0, 0, 0, 0))
+                            
+                            # The resized image fits perfectly on the canvas (no centering needed)
+                            canvas.paste(img_resized, (0, 0), mask=img_resized)
+                            
+                            canvas.save(new_path)
+                            processed_count += 1
+                    except Exception as e:
+                        error_count += 1
+                        st.warning(f"Error processing {os.path.basename(file_path)}: {str(e)}")
+                
+                status_text.empty()
+                progress_bar.empty()
+                
+                # Results summary
+                st.success(f"""
+                Processing complete!
+                - ✅ Processed: {processed_count} images
+                - ❌ Errors: {error_count} images
+                - All images resized to 400px on largest side
+                """)
+                
+                if processed_count > 0:
+                    # Create zip file with processed images
                     zip_buffer = io.BytesIO()
                     with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
-                        for file in processed_files_folder.iterdir():
-                            if file.is_file():
-                                if file.name.endswith('.backup'):
-                                    continue
-                                zip_file.write(file, file.name)
+                        for root, dirs, files in os.walk(output_folder):
+                            for file in files:
+                                file_path = os.path.join(root, file)
+                                rel_path = os.path.relpath(file_path, output_folder)
+                                zip_file.write(file_path, rel_path)
+                    
                     zip_buffer.seek(0)
-
-                    # Create combined ZIP with processed_files/ and reports/ folders
-                    combined_zip_buffer = io.BytesIO()
-                    with zipfile.ZipFile(combined_zip_buffer, 'w', zipfile.ZIP_DEFLATED) as combined_zip:
-                        # Add all processed files
-                        for file in processed_files_folder.iterdir():
-                            if file.is_file():
-                                if file.name.endswith('.backup'):
-                                    continue
-                                combined_zip.write(file, f"processed_files/{file.name}")
-
-                        # Add PDF report with timestamp
-                        if pdf_buffer:
-                            combined_zip.writestr(f"reports/Brand_Assets_Report_update_{timestamp}.pdf", pdf_buffer.getvalue())
-
-                        # Add Excel report with timestamp
-                        if excel_path and excel_path.exists():
-                            with open(excel_path, 'rb') as excel_file:
-                                combined_zip.writestr(f"reports/Brand_Assets_Overview_update_{timestamp}.xlsx", excel_file.read())
-
-                    combined_zip_buffer.seek(0)
-
-                    # Store in session state
-                    st.session_state.regenerated_data = {
-                        'pdf_buffer': pdf_buffer,
-                        'excel_path': excel_path,
-                        'zip_buffer': zip_buffer,
-                        'combined_zip_buffer': combined_zip_buffer,
-                        'temp_dir': temp_dir,
-                        'timestamp': timestamp
-                    }
-                    st.session_state.regeneration_complete = True
-
-                    st.rerun()
-
-        # Show download options if processing is complete
-        if st.session_state.regeneration_complete:
-            st.success("✅ Reports regenerated successfully!")
-
-            # Option to start over
-            if st.button("🔄 Process New File", help="Clear results and upload a new file"):
-                st.session_state.regeneration_complete = False
-                st.session_state.regenerated_data = {}
-                if 'temp_dir' in st.session_state.regenerated_data:
-                    try:
-                        shutil.rmtree(st.session_state.regenerated_data['temp_dir'])
-                    except:
-                        pass
-                st.rerun()
-
-            st.markdown("---")
-
-            timestamp = st.session_state.regenerated_data.get('timestamp', datetime.now().strftime("%Y%m%d"))
-
-            # Combined download option (recommended)
-            st.subheader("📦 Complete Package Download")
-            st.markdown("**Recommended:** Download everything in one convenient package")
-
-            if st.session_state.regenerated_data.get('combined_zip_buffer'):
-                st.download_button(
-                    label="🎁 Download Complete Package (All Files + Reports)",
-                    data=st.session_state.regenerated_data['combined_zip_buffer'].getvalue(),
-                    file_name=f"Brand_Assets_Complete_Package_{timestamp}.zip",
-                    mime="application/zip",
-                    type="primary"
-                )
-
-            st.markdown("---")
-
-            # Individual download options
-            st.subheader("📁 Individual Downloads")
-            st.markdown("Or download items separately:")
-
-            col1, col2, col3 = st.columns(3)
-
-            with col1:
-                if st.session_state.regenerated_data.get('pdf_buffer'):
+                    
+                    # Download button with unique key
                     st.download_button(
-                        label="📄 PDF Report",
-                        data=st.session_state.regenerated_data['pdf_buffer'].getvalue(),
-                        file_name=f"Brand_Assets_Report_update_{timestamp}.pdf",
-                        mime="application/pdf"
+                        label="📥 Download Resized Images (ZIP)",
+                        data=zip_buffer.getvalue(),
+                        file_name="resized_400px_images.zip",
+                        mime="application/zip",
+                        key="download_resized_transparent"
                     )
-                else:
-                    st.info("PDF report not available")
-
-            with col2:
-                if st.session_state.regenerated_data.get('excel_path'):
-                    try:
-                        with open(st.session_state.regenerated_data['excel_path'], 'rb') as excel_file:
-                            st.download_button(
-                                label="📊 Excel Report",
-                                data=excel_file.read(),
-                                file_name=f"Brand_Assets_Overview_update_{timestamp}.xlsx",
-                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                            )
-                    except:
-                        st.info("Excel report not available")
-
-            with col3:
-                if st.session_state.regenerated_data.get('zip_buffer'):
-                    st.download_button(
-                        label="📦 Processed Files",
-                        data=st.session_state.regenerated_data['zip_buffer'].getvalue(),
-                        file_name=f"Brand_Assets_Processed_{timestamp}.zip",
-                        mime="application/zip"
-                    )
-
-            st.markdown("---")
-            st.info("💡 **Tip:** Downloads will remain available until you upload a new file or click 'Process New File'")
-
+                    
+                    # Show preview
+                    with st.expander("🖼️ Preview Resized Images"):
+                        sample_files = []
+                        for root, dirs, files in os.walk(output_folder):
+                            for file in files[:3]:  # Get first 3 files from each folder
+                                if len(sample_files) < 6:  # Max 6 samples
+                                    sample_files.append(os.path.join(root, file))
+                        
+                        if sample_files:
+                            cols = st.columns(3)
+                            for i, file_path in enumerate(sample_files):
+                                with cols[i % 3]:
+                                    img = PILImage.open(file_path)
+                                    st.image(img, caption=f"{os.path.basename(file_path)} ({img.size[0]}x{img.size[1]})", use_column_width=True)
+                        
+                        if processed_count > 6:
+                            st.info(f"Showing sample images. Total processed: {processed_count}")
+            
+            except Exception as e:
+                st.error(f"An error occurred during processing: {str(e)}")
+    
     else:
-        # Reset session state when no file is uploaded
-        if st.session_state.regeneration_complete:
-            st.session_state.regeneration_complete = False
-            st.session_state.regenerated_data = {}
-
-        st.info("👆 Please upload a zip file to get started.")
-
+        st.info("👆 Please upload a zip file with images to resize.")
+        
+        # Instructions
         with st.expander("📖 Instructions"):
             st.markdown("""
-**What is Tab 6 (Re Run Matrix)?**
-
-Regenerates PDF and Excel reports from Tab 5 output after you've manually added new files.
-
-**When to use:**
-1. You have Tab 5 output with reports
-2. You manually added new files (following naming convention)
-3. You want updated reports with today's date
-
-**How to use:**
-1. Take your Tab 5 output folder (must include both PDF and Excel reports)
-2. Add any new files following the naming convention
-3. ZIP the entire folder
-4. Upload and click "Regenerate Reports"
-5. Download updated reports
-
-**Naming Convention:**
-`{markennummer}B{blocknummer}{marke}{count_str}{cleaned}{ext}`
-
-Example: `01B01dove01bodylotion.png`
-- `01` = brand number
-- `B01` = block/folder number  
-- `dove` = brand name
-- `01` = sequential counter
-- `bodylotion` = cleaned name
-- `.png` = file extension
-
-**Key Features:**
-- **Deduplication**: Same filename with different extensions counted only once
-- **Priority**: Non-image formats (mp4, mov, gif, txt) prioritized over images
-- **Highlighting**: Non-image formats highlighted in yellow in Excel
-- **Preserves**: Manual folder structure changes from Excel file
-""")
+            **How to use this tool:**
+            
+            1. Upload a zip file containing images
+            2. All images will be resized to 400px on their largest side (width or height)
+            3. Aspect ratio is maintained - smaller dimension will be scaled proportionally
+            4. Click "Process Images"
+            5. Download the resized images with transparent backgrounds
+            
+            **Examples:**
+            - 1000x800 image → 400x320 image (width was larger)
+            - 600x1200 image → 200x400 image (height was larger)  
+            - 400x400 image → 400x400 image (already correct size)
+            
+            **Features:**
+            - Maintains original aspect ratio
+            - Outputs PNG files to preserve transparency
+            - Preserves folder structure
+            - Fixed 400px maximum on largest dimension
+            """)
